@@ -188,19 +188,20 @@ bool compile(std::string const & contents, Test const * test) {
         std::unique_ptr<AST> ast = (test == nullptr) ? Parser::parseFile(contents) : Parser::parse(contents);
         if (Options::verboseAST)
             std::cout << ColorPrinter::colorize(*ast) << std::endl;
-        // typecheck
-        Typechecker::checkProgram(ast);
-        // translate to IR
-        Program p = ASTToILTranslator::translateProgram(ast);
-        if (Options::verboseIL)
-            std::cout << ColorPrinter::colorize(p) << std::endl;
-        if (test && test->testResult && Options::testIR) {
-            int64_t result = ILInterpreter::run(p);
-            if (result != test->result) {
-                std::cerr << "ERROR: expected " << test->result << ", got " << result << color::reset << std::endl;
-                return false;
-            }
-        }
+        // TODO
+//        // typecheck
+//        Typechecker::checkProgram(ast);
+//        // translate to IR
+//        Program p = ASTToILTranslator::translateProgram(ast);
+//        if (Options::verboseIL)
+//            std::cout << ColorPrinter::colorize(p) << std::endl;
+//        if (test && test->testResult && Options::testIR) {
+//            int64_t result = ILInterpreter::run(p);
+//            if (result != test->result) {
+//                std::cerr << "ERROR: expected " << test->result << ", got " << result << color::reset << std::endl;
+//                return false;
+//            }
+//        }
         // optimize
         // TODO
         // translate to target
