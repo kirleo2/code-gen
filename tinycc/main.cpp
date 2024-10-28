@@ -37,13 +37,14 @@ struct Test {
 #define ERROR(input, kind) Test{__FILE__, __LINE__, input, 0, false, # kind} 
 
 Test tests[] = {
-    TEST("int main() { return 1; }", 1),
-    TEST("int main() { if (1) return 10; else return 2; }", 10),
-    TEST("int main() { if (0) return 10; else return 2; }", 2),
-    TEST("int main() { int i = 1; return i; }", 1),
-    TEST("int bar(int i) { return i; } int main() { return bar(5); }", 5),
-    TEST("int bar(int i) { if (i) return 10; else return 5; } int main() { return bar(5); }", 10),
-    TEST("void bar(int * i) { *i = 10; } int main() { int i = 1; bar(&i); return i; }", 10),
+        TEST("unsigned int hui; int main(int a, int b, int c) {c = a + b; return  c;}", 0),
+//    TEST("int main() { return 1; }", 1),
+//    TEST("int main() { if (1) return 10; else return 2; }", 10),
+//    TEST("int main() { if (0) return 10; else return 2; }", 2),
+//    TEST("int main() { int i = 1; return i; }", 1),
+//    TEST("int bar(int i) { return i; } int main() { return bar(5); }", 5),
+//    TEST("int bar(int i) { if (i) return 10; else return 5; } int main() { return bar(5); }", 10),
+//    TEST("void bar(int * i) { *i = 10; } int main() { int i = 1; bar(&i); return i; }", 10),
 
   #ifdef foo  
 /*    TEST("void main(int a, int b) {}"),
@@ -189,10 +190,10 @@ bool compile(std::string const & contents, Test const * test) {
         if (Options::verboseAST)
             std::cout << ColorPrinter::colorize(*ast) << std::endl;
         // TODO
-//        // typecheck
-//        Typechecker::checkProgram(ast);
-//        // translate to IR
-//        Program p = ASTToILTranslator::translateProgram(ast);
+        // typecheck
+        //Typechecker::checkProgram(ast);
+        // translate to IR
+        Program p = ASTToILTranslator::translateProgram(ast);
 //        if (Options::verboseIL)
 //            std::cout << ColorPrinter::colorize(p) << std::endl;
 //        if (test && test->testResult && Options::testIR) {

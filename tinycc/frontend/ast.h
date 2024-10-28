@@ -366,6 +366,8 @@ namespace tiny {
     public:
         std::unique_ptr<ASTType> varType;
         std::unique_ptr<ASTIdentifier> name;
+        // can be null
+        // For example: int a; has no value assigned
         std::unique_ptr<AST> value;
 
         ASTVarDecl(Token const & t, std::unique_ptr<ASTType> varType):
