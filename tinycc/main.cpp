@@ -37,14 +37,19 @@ struct Test {
 #define ERROR(input, kind) Test{__FILE__, __LINE__, input, 0, false, # kind} 
 
 Test tests[] = {
-        TEST("unsigned int hui; int main(int a, int b, int c) {c = a + b; return  c;}", 0),
-//    TEST("int main() { return 1; }", 1),
-//    TEST("int main() { if (1) return 10; else return 2; }", 10),
-//    TEST("int main() { if (0) return 10; else return 2; }", 2),
-//    TEST("int main() { int i = 1; return i; }", 1),
-//    TEST("int bar(int i) { return i; } int main() { return bar(5); }", 5),
-//    TEST("int bar(int i) { if (i) return 10; else return 5; } int main() { return bar(5); }", 10),
-//    TEST("void bar(int * i) { *i = 10; } int main() { int i = 1; bar(&i); return i; }", 10),
+        TEST("int foo (int a, int b) {return a + b; } int main() {return foo( 1, 2 );}"),
+        TEST("int main(int a, int b, int c) { b = ++a; c = a++;}", 0),
+        TEST("int main() { int b[10]; }", 0),
+        TEST("int main() { int b = 0; int * c = &b; }", 0),
+        TEST("int main(int a, int b, int c) {for (int i = 0; i < 10; i--) { a = a -1; }}", 0),
+        TEST("int hui; int main(int a, int b, int c) {c = a + b; a = 5 / 2; b = a * 3; return c * a * b * a;}", 0),
+    TEST("int main() { return 1; }", 1),
+    TEST("int main() { if (1) return 10; else return 2; }", 10),
+    TEST("int main() { if (0) return 10; else return 2; }", 2),
+    TEST("int main() { int i = 1; return i; }", 1),
+    TEST("int bar(int i) { return i; } int main() { return bar(5); }", 5),
+    TEST("int bar(int i) { if (i) return 10; else return 5; } int main() { return bar(5); }", 10),
+    TEST("void bar(int * i) { *i = 10; } int main() { int i = 1; bar(&i); return i; }", 10),
 
   #ifdef foo  
 /*    TEST("void main(int a, int b) {}"),

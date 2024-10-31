@@ -484,6 +484,7 @@ namespace tiny {
     public:
         std::unique_ptr<AST> cond;
         std::unique_ptr<AST> trueCase;
+        // Can be NULL
         std::unique_ptr<AST> falseCase;
 
         ASTIf(Token const & t):
