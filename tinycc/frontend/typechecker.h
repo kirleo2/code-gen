@@ -4,7 +4,13 @@
 #include "common/source_error.h"
 #include "ast.h"
 
+
+
 namespace tiny {
+  #define ASSERT_TYPE(cond, msg) \
+    if (!(cond)) { \
+        throw TypeError{STR(msg), ast->location()}; \
+    }
 
     class TypeError : public SourceError {
     public:
@@ -181,9 +187,13 @@ namespace tiny {
             returned_ = old || allReturn;
         }
 
-        void visit(ASTSwitch * ast) override { 
-            MARK_AS_UNUSED(ast);
-            NOT_IMPLEMENTED;
+        void visit(ASTSwitch * ast) override {
+          typecheck(ast->cond);
+          for (const auto & case_ : ast->cases) {
+            typecheck(case_.second);
+          }
+          ASSERT_TYPE(ast->cond->type()->convertsImplicitlyTo(Type::getInt()), "Statement requires expression of integer type at ");
+          ast->setType(Type::getVoid());
         }
 
         void visit(ASTWhile * ast) override { 
@@ -196,9 +206,16 @@ namespace tiny {
             NOT_IMPLEMENTED;
         }
 
-        void visit(ASTFor * ast) override { 
-            MARK_AS_UNUSED(ast);
-            NOT_IMPLEMENTED;
+        void visit(ASTFor * ast) override {
+          if (ast->init) typecheck(ast->init);
+          if (ast->cond) {
+            typecheck(ast->cond);
+            ASSERT_TYPE(ast->cond->type()->convertsToBool(),
+                        "For loop condition is not contextually convertible to 'bool' at ");
+          }
+          if (ast->increment) typecheck(ast->increment);
+          typecheck(ast->body);
+          ast->setType(Type::getVoid());
          }
 
         /** No typechecking here */
@@ -224,30 +241,86 @@ namespace tiny {
 
         /** Binary operators are not hard, just a bit of processing is required. We need to support all binary operators TinyC recognizes, i.e.: *, /, %, +, -, <<, >>, <, <=, >, >=, ==, !=, &, |, && and ||. 
          */
-        void visit(ASTBinaryOp * ast) override { 
-            MARK_AS_UNUSED(ast);
-            NOT_IMPLEMENTED;
+        void visit(ASTBinaryOp * ast) override {
+          typecheck(ast->left);
+          typecheck(ast->right);
+          if (ast->right->type() != ast->left->type()) {
+            throw TypeError{STR("Type mismatch found in BINOP at "), ast->location()};
+          }
+
+          if (ast->op == Symbol::Mul) {
+            ast->setType(Type::getInt());
+          } else if (ast->op == Symbol::Add) {
+            ast->setType(Type::getInt());
+          } else if (ast->op == Symbol::Div) {
+            ast->setType(Type::getInt());
+          } else if (ast->op == Symbol::Mod) {
+            ast->setType(Type::getInt());
+          } else if (ast->op == Symbol::Sub) {
+            ast->setType(Type::getInt());
+          } else if (ast->op == Symbol::ShiftLeft) {
+            ast->setType(Type::getInt());
+          } else if (ast->op == Symbol::ShiftRight) {
+            ast->setType(Type::getInt());
+          } else if (ast->op == Symbol::Lt) {
+            ast->setType(Type::getInt());
+          } else if (ast->op == Symbol::Lte) {
+            ast->setType(Type::getInt());
+          } else if (ast->op == Symbol::Eq) {
+            ast->setType(Type::getInt());
+          } else if (ast->op == Symbol::NEq) {
+            ast->setType(Type::getInt());
+          } else if (ast->op == Symbol::Gt) {
+            ast->setType(Type::getInt());
+          } else if (ast->op == Symbol::Gte) {
+            ast->setType(Type::getInt());
+          } else if (ast->op == Symbol::And) {
+            ast->setType(Type::getInt());
+          } else if (ast->op == Symbol::Or) {
+            ast->setType(Type::getInt());
+          } else if (ast->op == Symbol::BitAnd) {
+            ast->setType(Type::getInt());
+          } else if (ast->op == Symbol::BitOr) {
+            ast->setType(Type::getInt());
+          }
         }
 
-        /** We must make sure the right hand side of the assignment has an address. Then ensure that the types match, including any implicit conversions and is ok, set own type to that of the rhs.
+        /** We must make sure the left hand side of the assignment has an address. Then ensure that the types match, including any implicit conversions and is ok, set own type to that of the rhs.
         */
-        void visit(ASTAssignment * ast) override { 
-            MARK_AS_UNUSED(ast);
-            NOT_IMPLEMENTED;
+        void visit(ASTAssignment * ast) override {
+          typecheck(ast->value);
+          typecheck(ast->lvalue);
+          if (!ast->lvalue->hasAddress()) {
+            throw TypeError{STR("Left hand side of assignment does not have an address! "), ast->location()};
+          }
+          if (ast->value->type() != ast->lvalue->type()) {
+            throw TypeError{STR("Type mismatch found in ASSIGNMENT at "), ast->location()};
+          }
+          ast->setType(ast->lvalue->type());
         }
 
         /** We have to handle correctly the types for all unary operators in TinyC, i.e. +, -, ~, !, ++ and --. 
          */       
-        void visit(ASTUnaryOp * ast) override { 
-            MARK_AS_UNUSED(ast);
-            NOT_IMPLEMENTED;
+        void visit(ASTUnaryOp * ast) override {
+          typecheck(ast->arg);
+          ASSERT(ast->arg->type() != Type::getVoid(), "Invalid type for unary expression");
+          if (ast->op == Symbol::Inc || ast->op == Symbol::Dec) {
+            ASSERT(ast->arg->hasAddress(), "Must have an address");
+          }
+          if (ast->op == Symbol::Not) {
+            ast->setType(Type::getInt());
+          } else {
+            ast->setType(ast->arg->type());
+          }
         }
 
         /** TinyC only has two post-operands, the post-increment and post-decrement. As they both modify the value, they require it to has an address. Only numeric types and pointers are supported. 
          */
-        void visit(ASTUnaryPostOp * ast) override { 
-            MARK_AS_UNUSED(ast);
-            NOT_IMPLEMENTED;
+        void visit(ASTUnaryPostOp * ast) override {
+          typecheck(ast->arg);
+          ASSERT(ast->arg->hasAddress(), "Must have an address");
+          ASSERT(ast->arg->type()->isNumeric() || (ast->arg->type()->isPointer()), "Must be whether pointer or numeric");
+          ast->setType(ast->arg->type());
         }
         
         /** The interesting feature of the address operator is that not every value in tinyC has an address (only local variables do)
@@ -408,7 +481,9 @@ namespace tiny {
             return result;
         }   
 
-        /** We use this to track that the AST subtree we just typechecked had a valid return on all its control flow paths. This means we need to clear the flag in every statement and set the flag in return. Special handling is necessary at junctions such as after if or switch.
+        /** We use this to track that the AST subtree we just typechecked had a valid return on all its control flow paths.
+         * This means we need to clear the flag in every statement and set the flag in return. Special handling
+         * is necessary at junctions such as after if or switch.
          */
         bool returned_ = false;
 

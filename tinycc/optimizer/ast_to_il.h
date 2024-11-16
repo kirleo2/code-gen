@@ -82,7 +82,7 @@ namespace tiny {
         void visit(ASTType* ast) override { MARK_AS_UNUSED(ast); UNREACHABLE;  }
         void visit(ASTPointerType* ast) override {
           auto element_type = translateAST(ast->base.get());
-          _last_result = (llvm::Value*) llvm::PointerType::get((llvm::Type*)element_type, 0);
+            _last_result = (llvm::Value*) llvm::PointerType::get((llvm::Type*)element_type, 0);
         }
         void visit(ASTArrayType* ast) override {
           auto element_type = translateAST(ast->base.get());
