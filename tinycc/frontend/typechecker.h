@@ -374,10 +374,17 @@ namespace tiny {
             ast->setType(t);
         }
 
-        /** Similar to AST member, but we must make sure that where we take the field from is a pointer and dereference it first */
-        void visit(ASTMemberPtr * ast) override { 
-            MARK_AS_UNUSED(ast);
-            NOT_IMPLEMENTED;
+        /** Similar to AST member, but we must make sure that where we take the field from is a pointer and dereference it first.
+         * Represents struct->member */
+        void visit(ASTMemberPtr * ast) override {
+          ASSERT_TYPE(typecheck(ast->base)->isPointer(), "Type must be a pointer, got " << *ast->base->type());
+          auto base_ptr = dynamic_cast<PointerType*>(ast->base->type());
+          auto struct_ = dynamic_cast<StructType*>(base_ptr->base());
+          ASSERT_TYPE(struct_ != nullptr, "Expected struct type, got " << *base_ptr->base());
+          ASSERT(struct_->isFullyDefined());
+          auto member = (*struct_)[ast->member];
+          ASSERT_TYPE(member != nullptr, "Struct " << *struct_ << "does not contain member " << ast->member);
+          ast->setType(member);
         }
         
         void visit(ASTCall * ast) override { 
