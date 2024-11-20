@@ -824,6 +824,7 @@ namespace tiny {
 
     };
 
+    // represents struct.member
     class ASTMember : public AST {
     public:
         std::unique_ptr<AST> base;

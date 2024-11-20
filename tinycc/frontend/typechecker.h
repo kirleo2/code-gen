@@ -53,9 +53,8 @@ namespace tiny {
             ast->setType(Type::getChar());
         }
         
-        void visit(ASTString * ast) override { 
-            MARK_AS_UNUSED(ast);
-            NOT_IMPLEMENTED;
+        void visit(ASTString * ast) override {
+          ast->setType(Type::getPointerTo(Type::getChar()));
         }
 
         /** Verify the variable exists, raise an error if not, otherwise set type the type of the variable.
@@ -78,11 +77,12 @@ namespace tiny {
             ast->setType(Type::getPointerTo(base));
         } 
 
-        /** A bit hacky, we treat arrays equally to pointers, i.e. in tinyc the sizeof array will be sizeof ptr still. A proper way would be to have an array type that would also keep the size with it and be convertible to a pointer.  
+        /** A bit hacky, we treat arrays equally to pointers, i.e. in tinyc the sizeof array will be sizeof ptr still.
+         * A proper way would be to have an array type that would also keep the size with it and be convertible to a pointer.
          */
-        void visit(ASTArrayType * ast) override { 
-            MARK_AS_UNUSED(ast);
-            NOT_IMPLEMENTED;
+        void visit(ASTArrayType * ast) override {
+          Type * base = typecheck(ast->base);
+          ast->setType(Type::getPointerTo(base));
         }
         
         /** For a named type, we need it to be present in the known types, otherwise it is a failure. 
@@ -121,6 +121,7 @@ namespace tiny {
                 throw TypeError(STR("Type " << *t << " is not fully defined yet"), ast->location());
             if (ast->value != nullptr) {
                 Type * valueType = typecheck(ast->value);
+                // TODO: Why now implicit conversion?
                 if (valueType != t)
                     throw TypeError{STR("Value of type " << *valueType << " cannot be assigned to variable of type " << *t), ast->location()};
             }
@@ -158,15 +159,26 @@ namespace tiny {
             leaveFunction();
         }
 
-        void visit(ASTStructDecl * ast) override { 
-            MARK_AS_UNUSED(ast);
-            NOT_IMPLEMENTED;
+        void visit(ASTStructDecl * ast) override {
+          StructType * struct_ = Type::getOrDeclareStruct(ast->name);
+          for (auto & field: ast->fields ) {
+            ASSERT_TYPE(struct_->addField(field.first->name, typecheck(field.second)), "Struct member names are not unique")
+          }
+          if (ast->isDefinition) struct_->markAsFullyDefined();
+          ast->setType(struct_);
         }
 
-        void visit(ASTFunPtrDecl * ast) override { 
-            MARK_AS_UNUSED(ast);
-            NOT_IMPLEMENTED;
-
+        void visit(ASTFunPtrDecl * ast) override {
+          std::vector<Type*> signature;
+          signature.push_back(typecheck(ast->returnType));
+          for (auto & i : ast->args) {
+            signature.push_back(typecheck(i));
+          }
+          auto func_type = Type::getFunction(signature);
+          auto type = Type::getPointerTo(func_type);
+          // we should not add name to scope, rather create an alias to type
+          Type::createAlias(ast->name->name, type);
+          ast->setType(type);
         }
 
         void visit(ASTIf * ast) override {
@@ -188,17 +200,25 @@ namespace tiny {
         }
 
         void visit(ASTSwitch * ast) override {
-          typecheck(ast->cond);
+          bool old = returned_;
+          bool allReturn = true;
+          ASSERT_TYPE(typecheck(ast->cond)->convertsImplicitlyTo(Type::getInt()), "Statement requires expression of integer type");
           for (const auto & case_ : ast->cases) {
+            returned_ = false;
             typecheck(case_.second);
+            allReturn &= returned_;
           }
-          ASSERT_TYPE(ast->cond->type()->convertsImplicitlyTo(Type::getInt()), "Statement requires expression of integer type at ");
+          if (ast->defaultCase == nullptr) allReturn = false;
           ast->setType(Type::getVoid());
+          returned_ = old || allReturn;
         }
 
-        void visit(ASTWhile * ast) override { 
-            MARK_AS_UNUSED(ast);
-            NOT_IMPLEMENTED;
+        void visit(ASTWhile * ast) override {
+          auto cond = typecheck(ast->cond);
+          typecheck(ast->body);
+          ASSERT_TYPE(cond->convertsToBool(),
+                      *cond << " is not contextually convertible to 'bool'");
+          ast->setType(Type::getVoid());
         }
 
         void visit(ASTDoWhile * ast) override { 
@@ -209,9 +229,9 @@ namespace tiny {
         void visit(ASTFor * ast) override {
           if (ast->init) typecheck(ast->init);
           if (ast->cond) {
-            typecheck(ast->cond);
-            ASSERT_TYPE(ast->cond->type()->convertsToBool(),
-                        "For loop condition is not contextually convertible to 'bool' at ");
+            auto cond = typecheck(ast->cond);
+            ASSERT_TYPE(cond->convertsToBool(),
+                        *cond << " is not contextually convertible to 'bool'");
           }
           if (ast->increment) typecheck(ast->increment);
           typecheck(ast->body);
@@ -242,45 +262,37 @@ namespace tiny {
         /** Binary operators are not hard, just a bit of processing is required. We need to support all binary operators TinyC recognizes, i.e.: *, /, %, +, -, <<, >>, <, <=, >, >=, ==, !=, &, |, && and ||. 
          */
         void visit(ASTBinaryOp * ast) override {
-          typecheck(ast->left);
-          typecheck(ast->right);
-          if (ast->right->type() != ast->left->type()) {
-            throw TypeError{STR("Type mismatch found in BINOP at "), ast->location()};
-          }
+          auto left  = typecheck(ast->left);
+          auto right = typecheck(ast->right);
 
-          if (ast->op == Symbol::Mul) {
-            ast->setType(Type::getInt());
-          } else if (ast->op == Symbol::Add) {
-            ast->setType(Type::getInt());
-          } else if (ast->op == Symbol::Div) {
-            ast->setType(Type::getInt());
+          ASSERT_TYPE((right->isNumeric() || right->isPointer())
+          && (left->isNumeric() || left->isPointer()),
+          "Binary operator is not supported for " << *left << "and" << *right);
+
+          if (ast->op == Symbol::Mul || ast->op == Symbol::Add || ast->op == Symbol::Div || ast->op == Symbol::Sub) {
+            ASSERT_TYPE(left->convertsImplicitlyTo(right) || right->convertsImplicitlyTo(left),
+                        "Arithmetic operator is not supported for " << *left << "and " << *right);
+            ast->setType(getArithmeticResult(left, right));
           } else if (ast->op == Symbol::Mod) {
+            ASSERT_TYPE(left->convertsImplicitlyTo(Type::getInt()) && right->convertsImplicitlyTo(Type::getInt()),
+                        "Mod operator is not supported for " << *left << "and " << *right);
+            // do we need to promote left and right to int here?
             ast->setType(Type::getInt());
-          } else if (ast->op == Symbol::Sub) {
+          } else if (ast->op == Symbol::ShiftLeft || ast->op == Symbol::ShiftRight) {
+            ASSERT_TYPE(left->convertsImplicitlyTo(Type::getInt()) && right->convertsImplicitlyTo(Type::getInt()),
+                        "Shift operator is not supported for " << *left << "and " << *right);
+            // do we need to promote left and right to int here?
             ast->setType(Type::getInt());
-          } else if (ast->op == Symbol::ShiftLeft) {
+          } else if (ast->op == Symbol::Lt || ast->op == Symbol::Lte || ast->op == Symbol::Eq ||
+                  ast->op == Symbol::NEq || ast->op == Symbol::Gt || ast->op == Symbol::Gte ||
+                  ast->op == Symbol::And || ast->op == Symbol::Or) {
+            ASSERT_TYPE(left->convertsImplicitlyTo(right) || right->convertsImplicitlyTo(left),
+                        "Comparison operator is not supported for " << *left << "and" << *right);
             ast->setType(Type::getInt());
-          } else if (ast->op == Symbol::ShiftRight) {
-            ast->setType(Type::getInt());
-          } else if (ast->op == Symbol::Lt) {
-            ast->setType(Type::getInt());
-          } else if (ast->op == Symbol::Lte) {
-            ast->setType(Type::getInt());
-          } else if (ast->op == Symbol::Eq) {
-            ast->setType(Type::getInt());
-          } else if (ast->op == Symbol::NEq) {
-            ast->setType(Type::getInt());
-          } else if (ast->op == Symbol::Gt) {
-            ast->setType(Type::getInt());
-          } else if (ast->op == Symbol::Gte) {
-            ast->setType(Type::getInt());
-          } else if (ast->op == Symbol::And) {
-            ast->setType(Type::getInt());
-          } else if (ast->op == Symbol::Or) {
-            ast->setType(Type::getInt());
-          } else if (ast->op == Symbol::BitAnd) {
-            ast->setType(Type::getInt());
-          } else if (ast->op == Symbol::BitOr) {
+          } else if (ast->op == Symbol::BitAnd || ast->op == Symbol::BitOr) {
+            ASSERT_TYPE(left->convertsImplicitlyTo(Type::getInt()) && right->convertsImplicitlyTo(Type::getInt()),
+                        "Bitwise operator is not supported for " << *left << "and " << *right);
+            // do we need to promote left and right to int here?
             ast->setType(Type::getInt());
           }
         }
@@ -288,13 +300,13 @@ namespace tiny {
         /** We must make sure the left hand side of the assignment has an address. Then ensure that the types match, including any implicit conversions and is ok, set own type to that of the rhs.
         */
         void visit(ASTAssignment * ast) override {
-          typecheck(ast->value);
-          typecheck(ast->lvalue);
+          auto value = typecheck(ast->value);
+          auto lvalue = typecheck(ast->lvalue);
           if (!ast->lvalue->hasAddress()) {
             throw TypeError{STR("Left hand side of assignment does not have an address! "), ast->location()};
           }
-          if (ast->value->type() != ast->lvalue->type()) {
-            throw TypeError{STR("Type mismatch found in ASSIGNMENT at "), ast->location()};
+          if (!value->convertsImplicitlyTo(lvalue)) {
+            throw TypeError{STR("Type mismatch found in ASSIGNMENT"), ast->location()};
           }
           ast->setType(ast->lvalue->type());
         }
@@ -302,10 +314,10 @@ namespace tiny {
         /** We have to handle correctly the types for all unary operators in TinyC, i.e. +, -, ~, !, ++ and --. 
          */       
         void visit(ASTUnaryOp * ast) override {
-          typecheck(ast->arg);
-          ASSERT(ast->arg->type() != Type::getVoid(), "Invalid type for unary expression");
+          auto t = typecheck(ast->arg);
+          ASSERT_TYPE(!t->convertsImplicitlyTo(Type::getVoid()), "Invalid type for unary expression");
           if (ast->op == Symbol::Inc || ast->op == Symbol::Dec) {
-            ASSERT(ast->arg->hasAddress(), "Must have an address");
+            ASSERT_TYPE(ast->arg->hasAddress(), "Type must have an address");
           }
           if (ast->op == Symbol::Not) {
             ast->setType(Type::getInt());
@@ -317,31 +329,37 @@ namespace tiny {
         /** TinyC only has two post-operands, the post-increment and post-decrement. As they both modify the value, they require it to has an address. Only numeric types and pointers are supported. 
          */
         void visit(ASTUnaryPostOp * ast) override {
-          typecheck(ast->arg);
-          ASSERT(ast->arg->hasAddress(), "Must have an address");
-          ASSERT(ast->arg->type()->isNumeric() || (ast->arg->type()->isPointer()), "Must be whether pointer or numeric");
-          ast->setType(ast->arg->type());
+          auto t = typecheck(ast->arg);
+          ASSERT_TYPE(ast->arg->hasAddress(), "Must have an address");
+          ASSERT_TYPE(t->isNumeric() || t->isPointer(), "Must be whether pointer or numeric");
+          ast->setType(t);
         }
         
         /** The interesting feature of the address operator is that not every value in tinyC has an address (only local variables do)
         */
-        void visit(ASTAddress * ast) override { 
-            MARK_AS_UNUSED(ast);
-            NOT_IMPLEMENTED;
+        void visit(ASTAddress * ast) override {
+          auto t = typecheck(ast->target);
+          ASSERT_TYPE(ast->target->hasAddress(), "Adress operator value must have an address");
+          ast->setType(Type::getPointerTo(t));
         }
 
         /** Only pointers can be dereferenced, in which case the result is their base type.
          */
-        void visit(ASTDeref * ast) override { 
-            MARK_AS_UNUSED(ast);
-            NOT_IMPLEMENTED;
+        void visit(ASTDeref * ast) override {
+          auto t = typecheck(ast->target);
+          ASSERT_TYPE(t->isPointer(), "Dereferenced type must be a pointer, got " << *t);
+          ast->setType(dynamic_cast<PointerType*>(t)->base());
         }
 
         /** Only pointers can be indexed.
          */
-        void visit(ASTIndex * ast) override { 
-            MARK_AS_UNUSED(ast);
-            NOT_IMPLEMENTED;
+        void visit(ASTIndex * ast) override {
+          auto base = typecheck(ast->base);
+          auto index = typecheck(ast->index);
+          ASSERT_TYPE(base->isPointer(), "Index operator base must be a pointer, got " << *base);
+          ASSERT_TYPE(index->convertsImplicitlyTo(Type::getInt()),
+                      "Index operator index must ne implicitly convertable to int, got " << *index);
+          ast->setType(dynamic_cast<PointerType*>(base)->base());
         }
 
         void visit(ASTMember * ast) override { 
@@ -377,7 +395,9 @@ namespace tiny {
             ast->setType(ft->returnType());
         }
 
-        /** In C-like languages, from typechecking perspective, casting is really trivial. Anything can typecheck to anything, as long as (a) the value typechecks and (b) the target type is fully defined.   
+        /** In C-like languages, from typechecking perspective, casting is really trivial.
+         * Anything can typecheck to anything, as long as (a) the value typechecks and
+         * (b) the target type is fully defined.
          */
         void visit(ASTCast * ast) override { 
             typecheck(ast->value);

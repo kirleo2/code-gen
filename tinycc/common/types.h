@@ -51,7 +51,6 @@ namespace tiny {
 
         virtual bool convertsImplicitlyTo(Type * other) const { return other == this; }
 
-
         static void resetTypeInformation(); 
 
         static Type * getType(Symbol sym) {
@@ -80,6 +79,7 @@ namespace tiny {
         static Type * getChar() { return getType(Symbol::KwChar); }
 
         virtual void format(std::ostream & s) const = 0;
+
 
     private:
 
