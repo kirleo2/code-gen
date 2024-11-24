@@ -1,6 +1,7 @@
 #pragma once
 
 #include <unordered_map>
+#include "llvm/IR/Constants.h"
 
 
 #include "helpers.h"
@@ -46,6 +47,10 @@ namespace tiny {
         virtual bool convertsToBool() const { return false; }
 
         virtual bool isPointer() const { return false; }
+
+        virtual bool isFunction() const { return false; }
+
+        virtual bool isStruct() const { return false; }
 
         virtual bool isNumeric() const { return false; }
 
@@ -199,6 +204,8 @@ namespace tiny {
 
         size_t size() const override { return 0; }
 
+        bool isFunction() const override { return  true; }
+
         void format(std::ostream & s) const override {  
             signature_[0]->format(s);
             s << "(";
@@ -228,6 +235,10 @@ namespace tiny {
          */
         bool isFullyDefined() const override {
             return fullyDefined_;
+        }
+
+        bool isStruct() const override {
+          return true;
         }
 
         /** Marks the struct as fully defined. */
@@ -269,7 +280,15 @@ namespace tiny {
                     return i.second;
             return nullptr;
         }
-        
+
+        std::pair<Symbol, Type*> operator[](size_t index) const {
+          return fields_[index];
+        }
+
+        size_t fieldCount() const {
+          return fields_.size();
+        }
+
     private:
         friend class Type;
 

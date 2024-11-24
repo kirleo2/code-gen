@@ -15,11 +15,13 @@ namespace tiny {
 
     class ASTToILTranslator : public ASTVisitor {
     public:
+
       ASTToILTranslator() {
         _context = new llvm::LLVMContext();
         _module = new llvm::Module("my module", *_context);
         _environments.emplace_back();
       }
+
       ~ASTToILTranslator() {
         _module->print(llvm::outs(), nullptr);
         delete _module;
@@ -46,15 +48,15 @@ namespace tiny {
         /** Translating the literals is trivial. Since for simplicity reasons we do not allow literals to appear as arguments of operator instructions, each literal has to be first loaded as an immediate value to a new register. 
          */
         void visit(ASTInteger * ast) override {
-          _last_result = llvm::ConstantInt::get(getType(Symbol::KwInt), ast->value);
+          _last_result = llvm::ConstantInt::get(getLLVMType(ast->type()), ast->value);
         }
 
         void visit(ASTDouble * ast) override {
-          _last_result = llvm::ConstantFP::get(getType(Symbol::KwDouble), ast->value);
+          _last_result = llvm::ConstantFP::get(getLLVMType(ast->type()), ast->value);
         }
 
         void visit(ASTChar * ast) override {
-          _last_result = llvm::ConstantInt::get(getType(Symbol::KwChar), ast->value);
+          _last_result = llvm::ConstantInt::get(getLLVMType(ast->type()), ast->value);
         }
 
         /** Translating string literals is a bit harder - each string literal is deduplicated and stored as a new global variable that is also initialized with the contents of the literal. 
@@ -66,35 +68,31 @@ namespace tiny {
 
         /** Identifier is translated as a variable read. Note that this is as the address. 
         */
-        void visit(ASTIdentifier* ast) override { 
+        void visit(ASTIdentifier* ast) override {
           // TODO How to deal with structures?
-          _last_result = getLocal(ast->name);
-          ASSERT(_last_result != nullptr);
+          auto local = getLocal(ast->name);
           if (lValue_) {
+            _last_result = local.first;
             lValue_ = false;
           } else {
-            ASSERT(llvm::isa<llvm::AllocaInst>(_last_result));
-            _last_result = new llvm::LoadInst(llvm::cast<llvm::AllocaInst>(_last_result)->getAllocatedType(), _last_result, ast->name.name(), _bb);
+            ASSERT(llvm::isa<llvm::AllocaInst>(local.first));
+            _last_result = new llvm::LoadInst(getLLVMType(ast->type()), _last_result, ast->name.name(), _bb);
           }
 
         }
 
         void visit(ASTType* ast) override { MARK_AS_UNUSED(ast); UNREACHABLE;  }
-        void visit(ASTPointerType* ast) override {
-          auto element_type = translateAST(ast->base.get());
-            _last_result = (llvm::Value*) llvm::PointerType::get((llvm::Type*)element_type, 0);
-        }
+        void visit(ASTPointerType* ast) override { MARK_AS_UNUSED(ast); UNREACHABLE; }
         void visit(ASTArrayType* ast) override {
-          auto element_type = translateAST(ast->base.get());
-          auto size = llvm::dyn_cast<llvm::ConstantInt> (translateAST(ast->size.get()));
-          ASSERT(size != nullptr);
-          _last_result = (llvm::Value*) llvm::ArrayType::get((llvm::Type*)element_type, size->getZExtValue());
+          MARK_AS_UNUSED(ast); UNREACHABLE;
+//          auto element_type = translateAST(ast->base.get());
+//          auto size = llvm::dyn_cast<llvm::ConstantInt> (translateAST(ast->size.get()));
+//          ASSERT(size != nullptr);
+//          _last_result = (llvm::Value*) llvm::ArrayType::get((llvm::Type*)element_type, size->getZExtValue());
         }
-        void visit(ASTNamedType* ast) override {
-          _last_result = (llvm::Value*) getType(ast->name);
-        }
+        void visit(ASTNamedType* ast) override { MARK_AS_UNUSED(ast); UNREACHABLE; }
 
-        /** Seuquence simply translates its elements. 
+        /** Sequence simply translates its elements.
          */
         void visit(ASTSequence* ast) override { 
             for (auto & i : ast->body)
@@ -111,8 +109,8 @@ namespace tiny {
         }
 
         void visit(ASTVarDecl* ast) override {
-          auto t = (llvm::Type*)translateAST(ast->varType.get());
-          auto val = ast->value != nullptr ? translateAST(ast->value.get()) : nullptr;
+          auto t = getLLVMType(ast->type());
+          auto val = ast->value != nullptr ? translate(ast->value) : nullptr;
           // We need to distinguish whether we are in the global context or inside the function
           if (_func == nullptr) {
             _last_result = new llvm::GlobalVariable(*_module, t, false, llvm::GlobalValue::ExternalLinkage,
@@ -120,7 +118,7 @@ namespace tiny {
           } else {
             _last_result = new llvm::AllocaInst(t, 0, ast->name->name.name(), _bb);
           }
-          pushLocal(ast->name->name, _last_result);
+          pushLocal(ast->name->name, _last_result, ast->type());
           if (_func != nullptr && ast->value != nullptr) {
             // generate store if value present and we are at local context
             new llvm::StoreInst(val, _last_result, false, _bb);
@@ -131,29 +129,23 @@ namespace tiny {
         /** Enter a new function.
          */
         void visit(ASTFunDecl* ast) override {
-          std::vector<llvm::Type*> types;
-          // set up function parameters and return type
-          for (auto & arg : ast->args) {
-            auto type = translateAST(arg.first.get());
-            types.push_back((llvm::Type*)type);
-          }
-          auto retType = translateAST(ast->returnType.get());
-          llvm::FunctionType* functionType = llvm::FunctionType::get((llvm::Type*) retType, types, false);
+          auto functionType = llvm::cast<llvm::FunctionType>(getLLVMType(ast->type()));
           _func = llvm::Function::Create(functionType, llvm::Function::ExternalLinkage, ast->name.name(), *_module);
           _func->setCallingConv(llvm::CallingConv::C);
-          pushLocal(ast->name, _func);
+          pushLocal(ast->name, _func, ast->type());
           _bb = llvm::BasicBlock::Create(*_context, "prolog", _func);
           _environments.emplace_back();
           // iterate through arguments to store them in environment, set their names and retrieve their values
           size_t i = 0;
           for (auto & arg : _func->args()) {
             arg.setName(ast->args[i].second->name.name());
-            auto alloca = new llvm::AllocaInst(types[i], 0, ast->args[i].second->name.name(), _bb);
+            assert(getLLVMType(dynamic_cast<FunctionType*>(ast->type())->arg(i)) == arg.getType());
+            auto alloca = new llvm::AllocaInst(arg.getType(), 0, ast->args[i].second->name.name(), _bb);
             new llvm::StoreInst(&arg, alloca, false, _bb);
-            pushLocal(ast->args[i].second->name, alloca);
+            pushLocal(ast->args[i].second->name, alloca, dynamic_cast<FunctionType*>(ast->type())->arg(i));
             i++;
           }
-          visitChild(ast->body);
+          translate(ast->body);
           leaveFunction();
 
 ////            Function * f = enterFunction(ast->name);
@@ -184,7 +176,7 @@ namespace tiny {
         void visit(ASTFunPtrDecl* ast) override {MARK_AS_UNUSED(ast); lastResult_ = nullptr; }
 
         void visit(ASTIf* ast) override {
-          auto cmp = translateAST(ast->cond.get());
+          auto cmp = translate(ast->cond);
           auto if_exit = llvm::BasicBlock::Create(*_context, "if_exit", _func);
           auto true_branch = llvm::BasicBlock::Create(*_context, "true", _func);
           auto false_branch = ast->falseCase !=  nullptr ? llvm::BasicBlock::Create(*_context, "false", _func) : if_exit;
@@ -231,7 +223,7 @@ namespace tiny {
           llvm::BranchInst::Create(cond, _bb);
           // start loop with condition check
           _bb = cond;
-          auto cmp = translateAST(ast->cond.get());
+          auto cmp = translate(ast->cond);
           llvm::BranchInst::Create(loop_body, loop_exit, cmp, _bb);
           // translate body
           _bb = loop_body;
@@ -265,8 +257,13 @@ namespace tiny {
         }
         
         void visit(ASTBinaryOp* ast) override {
-          auto lhs = translateAST(ast->left.get());
-          auto rhs = translateAST(ast->right.get());
+          std::cout << "Translating binop " << ast->op << std::endl;
+          auto lhs = translate(ast->left);
+          lhs = createCast(lhs, getLLVMType(ast->type()));
+          auto rhs = translate(ast->right);
+          rhs = createCast(rhs, getLLVMType(ast->type()));
+
+          // TODO: Pointer arithmetic?
           if (ast->op == Symbol::Add) {
             _last_result = llvm::BinaryOperator::CreateAdd(lhs, rhs, "sum", _bb);
           } else if (ast->op == Symbol::BitAnd) {
@@ -293,73 +290,135 @@ namespace tiny {
             _last_result = llvm::ICmpInst::Create(llvm::Instruction::ICmp, llvm::ICmpInst::ICMP_EQ, lhs, rhs, "eq", _bb);
           } else if (ast->op == Symbol::NEq) {
             _last_result = llvm::ICmpInst::Create(llvm::Instruction::ICmp, llvm::ICmpInst::ICMP_NE, lhs, rhs, "neq", _bb);
+          }  else if (ast->op == Symbol::And) {
+            // TODO
           } else {
+            std::cout << "OPERATOR:" << ast->op.name() << std::endl;
             UNREACHABLE;
           }
         }
 
         void visit(ASTAssignment* ast) override {
           // lvalue should not fetch load instruction, we only need to obtain register from env
-          auto lvalue = translateLValue(ast->lvalue.get());
-          auto value = translateAST(ast->value.get());
+          auto lvalue = translateLValue(ast->lvalue);
+          auto value = translate(ast->value);
+          // implicit cast if necessary
+          value = createCast(value, getLLVMType(ast->type()));
           _last_result = new llvm::StoreInst(value, lvalue, false, _bb);
         }
 
         void visit(ASTUnaryOp* ast) override {
-          // fetch the var address, load the value,  then apply Op and return after application
-          auto val = translateLValue(ast->arg.get());
-          auto load_val = new llvm::LoadInst(llvm::cast<llvm::AllocaInst>(val)->getAllocatedType(), val, val->getName(), _bb);
+          // fetch the var address, load the value, then apply Op and return after application
+          llvm::Value* val = translateLValue(ast->arg);
+          llvm::Value* load_val = new llvm::LoadInst(getLLVMType(ast->arg->type()), val, val->getName(), _bb);
+          // implicit cast if necessary
+          load_val = createCast(load_val, getLLVMType(ast->type()));
 
-          if (ast->op == Symbol::Inc) {
-            _last_result = llvm::BinaryOperator::CreateAdd(load_val, llvm::ConstantInt::get(getType(Symbol::KwInt), 1), "inc", _bb);
+          if (ast->op == Symbol::Inc || ast->op == Symbol::Dec) {
+            // The type could be pointer, int or double
+            ASSERT(ast->type()->isNumeric() || ast->type()->isPointer());
+            llvm::Value * constant = nullptr;
+
+            if (ast->type() == Type::getDouble()) {
+              constant = llvm::ConstantFP::get(getLLVMType(Type::getDouble()), ast->op == Symbol::Inc ? 1.0 : -1.0);
+            } else {
+              constant = llvm::ConstantInt::get(getLLVMType(Type::getInt()), ast->op == Symbol::Inc ? 1 : -1);
+            }
+
+            if (ast->type()->isNumeric()) {
+              _last_result = llvm::BinaryOperator::CreateAdd(load_val, constant, "inc", _bb);
+            } else {
+              _last_result = llvm::GetElementPtrInst::Create(getLLVMType(dynamic_cast<PointerType*>(ast->arg->type())->base()), load_val, constant, "inc_ptr", _bb);
+            }
+
             new llvm::StoreInst(_last_result, val, false, _bb);
-          } else if (ast->op == Symbol::Dec) {
-            _last_result = llvm::BinaryOperator::CreateSub(load_val, llvm::ConstantInt::get(getType(Symbol::KwInt), 1), "inc", _bb);
-            new llvm::StoreInst(_last_result, val, false, _bb);
-          } else {
-            UNREACHABLE;
+          } else if (ast->op == Symbol::Neg) {
+            llvm::Value *allOnes = llvm::ConstantInt::getAllOnesValue(llvm::Type::getInt32Ty(*_context));
+            _last_result = llvm::BinaryOperator::CreateXor(load_val, allOnes, "~int", _bb);
+          } else if (ast->op == Symbol::Sub) {
+            // for double -> FNEG
+            // for int 0 -> value
+            if (ast->type() == Type::getDouble()) {
+              _last_result = llvm::UnaryOperator::CreateFNeg(load_val, "fneg", _bb);
+            } else {
+              ASSERT(ast->type() == Type::getInt());
+              llvm::Value *zero = llvm::ConstantInt::get(llvm::Type::getInt32Ty(*_context), 0);
+              _last_result = llvm::BinaryOperator::CreateSub(zero, val, "neg", _bb);
+            }
           }
         }
 
         void visit(ASTUnaryPostOp* ast) override {
           // fetch the var address, load the value, then apply Op and return loaded value before application
-          auto val = translateLValue(ast->arg.get());
-          auto load_val = new llvm::LoadInst(llvm::cast<llvm::AllocaInst>(val)->getAllocatedType(), val, val->getName(), _bb);
+          llvm::Value* val = translateLValue(ast->arg);
+          llvm::Value* load_val = new llvm::LoadInst(getLLVMType(ast->arg->type()), val, val->getName(), _bb);
 
-          if (ast->op == Symbol::Inc) {
-            auto add = llvm::BinaryOperator::CreateAdd(load_val, llvm::ConstantInt::get(getType(Symbol::KwInt), 1), "inc", _bb);
-            new llvm::StoreInst(add, val, false, _bb);
-          } else if (ast->op == Symbol::Dec) {
-            auto sub = llvm::BinaryOperator::CreateSub(load_val, llvm::ConstantInt::get(getType(Symbol::KwInt), 1), "inc", _bb);
-            new llvm::StoreInst(sub, val, false, _bb);
+          load_val = createCast(load_val, getLLVMType(ast->type()));
+
+          if (ast->op == Symbol::Inc || ast->op == Symbol::Dec) {
+            // for each type increment should be different:
+            // we have to obtain the type and emit appropriate constant. In case of pointers
+            // we have to emit constant equals to pointee size;
+
+            // The type could be pointer, int or double
+            ASSERT(ast->type()->isNumeric() || ast->type()->isPointer());
+            llvm::Value * constant = nullptr;
+
+            if (ast->type() == Type::getDouble()) {
+              constant = llvm::ConstantFP::get(getLLVMType(Type::getDouble()), ast->op == Symbol::Inc ? 1.0 : -1.0);
+            } else {
+              constant = llvm::ConstantInt::get(getLLVMType(Type::getInt()), ast->op == Symbol::Inc ? 1 : -1);
+            }
+            // tmp variable to discard the result
+            llvm::Value* res = nullptr;
+            if (ast->type()->isNumeric()) {
+              res = llvm::BinaryOperator::CreateAdd(load_val, constant, "inc", _bb);
+            } else {
+              res = llvm::GetElementPtrInst::Create(getLLVMType(dynamic_cast<PointerType*>(ast->arg->type())->base()), load_val, constant, "inc_ptr", _bb);
+            }
+
+            new llvm::StoreInst(res, val, false, _bb);
           } else {
             UNREACHABLE;
           }
+
           _last_result = load_val;
         }
 
         void visit(ASTAddress* ast) override {
-          auto target = translateLValue(ast->target.get());
+          auto target = translateLValue(ast->target);
           auto base_index = llvm::ConstantInt::get(llvm::Type::getInt32Ty(*_context), 0);
           _last_result = llvm::GetElementPtrInst::Create(target->getType(), target, {base_index}, "addr", _bb);
         }
 
         void visit(ASTDeref* ast) override {
           // do not know how to do.... with opaque pointer types
-          auto target = translateAST(ast->target.get());
+          auto target = translate(ast->target);
           _last_result = new llvm::LoadInst(target->getType(), target, "", _bb);
         }
 
         void visit(ASTIndex* ast) override {
-          auto index = translateAST(ast->index.get());
+          auto index = translate(ast->index);
           ASSERT(llvm::isa<llvm::Constant>(index));
-          auto alloca = translateLValue(ast->base.get());
+          auto alloca = translateLValue(ast->base);
           _last_result = llvm::GetElementPtrInst::Create(llvm::cast<llvm::AllocaInst>(alloca)->getAllocatedType(), alloca, {index}, "addr", _bb);
         }
 
-        void visit(ASTMember* ast) override { 
-            MARK_AS_UNUSED(ast);
-            NOT_IMPLEMENTED;
+        void visit(ASTMember* ast) override {
+          llvm::Value* struct_ = translateLValue(ast->base);
+          ASSERT(struct_ != nullptr);
+          StructType* structType = dynamic_cast<StructType*>(ast->base->type());
+          // get the pointer the member and load its value
+          for (size_t i = 0; i < structType->fieldCount(); i++) {
+            if ((*structType)[i].first == ast->member) {
+              auto ptr = llvm::GetElementPtrInst::Create(getLLVMType(ast->base->type()), struct_,
+                                              {llvm::ConstantInt::get(llvm::Type::getInt32Ty(*_context), 0),
+                                               llvm::ConstantInt::get(llvm::Type::getInt32Ty(*_context), i)}, "GEP", _bb);
+              assert(ptr != nullptr);
+              _last_result = new llvm::LoadInst(getLLVMType((*structType)[i].second), ptr, ast->member.name(), _bb);
+              return;
+            }
+          }
         }
 
         void visit(ASTMemberPtr* ast) override { 
@@ -368,18 +427,55 @@ namespace tiny {
         }
 
         void visit(ASTCall* ast) override {
-          auto func = translateLValue(ast->function.get());
+          auto func = translateLValue(ast->function);
           ASSERT(llvm::isa<llvm::Function>(func));
           std::vector<llvm::Value*> args;
           for (const auto & arg: ast->args) {
-            args.push_back(translateAST(arg.get()));
+            args.push_back(translate(arg));
           }
           llvm::CallInst::Create(llvm::cast<llvm::Function>(func)->getFunctionType(), func, args, "call", _bb);
         }
 
-        void visit(ASTCast* ast) override { 
-            MARK_AS_UNUSED(ast);
-            NOT_IMPLEMENTED;
+        /* Does cast if types are different and this is possible */
+        llvm::Value* createCast(llvm::Value * src, llvm::Type * type) {
+          // if src->type != type, create an appropriate cast instruction from src to dest
+          llvm::Value* casted = src;
+          llvm::Type* src_type = src->getType();
+          if (src_type != type) {
+            if (src_type->isIntegerTy() && type->isIntegerTy()) {
+              // Integer to integer: Extend or truncate
+              unsigned SrcBits = src_type->getIntegerBitWidth();
+              unsigned DestBits = type->getIntegerBitWidth();
+              if (SrcBits < DestBits) {
+                casted = new llvm::SExtInst(src, type, "sext", _bb);
+              } else {
+                casted = new llvm::TruncInst(src, type, "trunc", _bb);
+              }
+            } else if (src_type->isIntegerTy() && type->isDoubleTy()) {
+              // TODO: Handle char?
+              casted = new llvm::SIToFPInst(src, type, "sitofp", _bb);
+            } else if (src_type->isIntegerTy() && type->isPointerTy()) {
+              // TODO: Handle char?
+              casted = new llvm::IntToPtrInst(src, type, "inttoptr", _bb);
+            } else if (src_type->isPointerTy() && type->isIntegerTy()) {
+              // TODO: Handle char?
+              casted = new llvm::PtrToIntInst(src, type, "ptrtoint", _bb);
+            } else if (src_type->isPointerTy() && type->isPointerTy()) {
+            // Pointer to pointer: Bitcast
+            // TODO: How does it work with opaque pointers?
+            casted = new llvm::BitCastInst(src, type, "bitcast", _bb);
+          } else {
+              // Unsupported cast
+              src_type->print(llvm::outs());
+              type->print(llvm::outs());
+              UNREACHABLE;
+            }
+          }
+          return casted;
+        }
+
+        void visit(ASTCast* ast) override {
+          createCast(translate(ast->value), getLLVMType(ast->type->type()));
         }
 
         void visit(ASTPrint* ast) override { 
@@ -393,26 +489,23 @@ namespace tiny {
         }
 
     private:
-      llvm::Value* translateAST(AST* ast) {
-        visitChild(ast);
-        return _last_result;
-        }
 
         template<typename T>
-        typename std::enable_if<std::is_base_of<AST, T>::value, Instruction *>::type
+        typename std::enable_if<std::is_base_of<AST, T>::value, llvm::Value*>::type
         translate(std::unique_ptr<T> const & child) {
             visitChild(child.get());
-            return lastResult_;
-        }   
-
-
-        llvm::Value * translateLValue(AST * child) {
-            bool old = lValue_;
-            lValue_ = true;
-            visitChild(child);
             return _last_result;
-            lValue_ = old;
-        }   
+        }
+
+      template<typename T>
+      typename std::enable_if<std::is_base_of<AST, T>::value, llvm::Value*>::type
+      translateLValue(std::unique_ptr<T> const & child) {
+        bool old = lValue_;
+        lValue_ = true;
+        visitChild(child.get());
+        return _last_result;
+        lValue_ = old;
+      }
 
         /** Adds the given instruction to the program, adding it to the current basic block, which should not be terminated. 
          */
@@ -468,28 +561,52 @@ namespace tiny {
             _environments.pop_back();
         }
 
-        llvm::Type* getType(const Symbol & type) {
+        llvm::Type* getLLVMType(Type * type) {
           // try to load from cache
           auto it = _type_cache.find(type);
           if (it != _type_cache.end()) {
             return it->second;
           }
-          llvm::Type* _type = nullptr;
-          if (type == Symbol::KwChar) {
-            _type = llvm::Type::getInt8Ty(*_context);
-          } else if (type == Symbol::KwInt) {
-            _type = llvm::Type::getInt32Ty(*_context);
-          } else if (type == Symbol::KwDouble) {
-            _type = llvm::Type::getDoubleTy(*_context);
-          } else if (type == Symbol::KwVoid) {
-            _type = llvm::Type::getVoidTy(*_context);
-          } else if (type == Symbol::KwStruct) {
-            NOT_IMPLEMENTED;
+
+          llvm::Type* llvm_type = nullptr;
+          // type is SimpleType
+          if (type == Type::getInt()) {
+            llvm_type = llvm::Type::getInt32Ty(*_context);
+          } else if (type == Type::getChar()) {
+            llvm_type = llvm::Type::getInt8Ty(*_context);
+          } else if (type == Type::getDouble()) {
+            llvm_type = llvm::Type::getDoubleTy(*_context);
+          } else if (type == Type::getVoid()) {
+            llvm_type = llvm::Type::getVoidTy(*_context);
+          } else if (type->isPointer()) {
+            // distinguish between array and usual ptr
+
+            llvm_type = llvm::PointerType::get(*_context, 0);
+          } else if (type->isFunction()) {
+            FunctionType * f_type = dynamic_cast<FunctionType*> (type);
+            ASSERT(f_type != nullptr);
+            std::vector<llvm::Type*> types;
+            // set up function parameters and return type
+            for (size_t i = 0; i < f_type->numArgs(); i++) {
+              types.push_back(getLLVMType(f_type->arg(i)));
+            }
+
+            auto retType = getLLVMType(f_type->returnType());
+            llvm_type = llvm::FunctionType::get(retType, types, false);
+          } else if (type->isStruct()) {
+            StructType *struct_type = dynamic_cast<StructType *> (type);
+            ASSERT(struct_type != nullptr);
+            std::vector<llvm::Type*> types;
+            for (size_t i = 0; i < struct_type->fieldCount(); i++) {
+              types.push_back(getLLVMType((*struct_type)[i].second));
+            }
+            llvm_type = llvm::StructType::get(*_context, types);
           } else {
             UNREACHABLE;
           }
-          _type_cache[type] = _type;
-          return _type;
+
+          _type_cache[type] = llvm_type;
+          return llvm_type;
         }
 
         /** Creates new local variable with given name and size. The variable's ALLOCA instruction is appended to the current block's local definitions basic block and the register containing the address is returned. 
@@ -500,19 +617,19 @@ namespace tiny {
             return res;
         }
 
-        void pushLocal(Symbol name, llvm::Value* val) {
-          _environments.back().insert(std::make_pair(name, val));
+        void pushLocal(Symbol name, llvm::Value* val, Type* type) {
+          _environments.back().insert(std::make_pair(name, std::make_pair(val, type)));
         }
 
         /** Returns the register that holds the address of variable with given name. The address can then be used to load/store its contents. 
          */
-        llvm::Value* getLocal(Symbol name) {
+        std::pair<llvm::Value*, Type*> getLocal(Symbol name) {
             for (size_t i = _environments.size() - 1, e = _environments.size(); i < e; --i) {
                 auto it = _environments[i].find(name);
                 if (it != _environments[i].end())
                     return it->second;
             }
-            return nullptr;
+            return {};
         }
 
         llvm::Module* _module = nullptr;
@@ -522,10 +639,9 @@ namespace tiny {
         llvm::BasicBlock* _continue_target = nullptr;
         llvm::Value* _last_result = nullptr;
         llvm::Function * _func = nullptr;
-        std::vector<std::unordered_map<Symbol, llvm::Value*>> _environments;
+        std::vector<std::unordered_map<Symbol, std::pair<llvm::Value*, Type*>>> _environments;
 
-
-        std::unordered_map<Symbol, llvm::Type*> _type_cache;
+        std::unordered_map<Type*, llvm::Type*> _type_cache;
 
         Program p_;
         std::vector<Context> _contexts;

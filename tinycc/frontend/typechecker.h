@@ -155,7 +155,7 @@ namespace tiny {
             typecheck(ast->body);
             if (!returned_ && returnType != Type::getVoid()) 
                 throw TypeError(STR("Not all paths of the function return " << *returnType), ast->location());
-            ast->setType(Type::getVoid());
+            ast->setType(ftype);
             leaveFunction();
         }
 
@@ -253,6 +253,7 @@ namespace tiny {
         void visit(ASTReturn * ast) override { 
             Type * result = ast->value ? typecheck(ast->value) : Type::getVoid();
             Type * expectedReturnType = contexts_.back().returnType;
+            // TODO: Why not implicitly coversion?
             if (result != expectedReturnType)
                 throw TypeError{STR("Return type " << *result << " found, but " << *expectedReturnType << " found"), ast->location()};
             ast->setType(result);
@@ -320,6 +321,7 @@ namespace tiny {
             ASSERT_TYPE(ast->arg->hasAddress(), "Type must have an address");
           }
           if (ast->op == Symbol::Not) {
+            ASSERT_TYPE(t->convertsImplicitlyTo(Type::getInt()), "Invalid type for unary expression ~, got " << *t);
             ast->setType(Type::getInt());
           } else {
             ast->setType(ast->arg->type());
@@ -388,18 +390,24 @@ namespace tiny {
         }
         
         void visit(ASTCall * ast) override { 
-            Type * t = typecheck(ast->function);
-            FunctionType * ft = dynamic_cast<FunctionType*>(t);
-            if (ft == nullptr) 
-                throw TypeError{STR("Expected function, but value of " << *t << " found"), ast->location()};
-            if (ast->args.size() != ft->numArgs())
-                throw TypeError{STR("Function of type " << *ft << " requires " << ft->numArgs() << " arguments, but " << ast->args.size() << " given"), ast->location()};
-            for (size_t i = 0; i < ast->args.size(); ++i) {
-                Type * argType = typecheck(ast->args[i]);
-                if (argType != ft->arg(i))
-                    throw TypeError{STR("Type " << *(ft->arg(i)) << " expected for argument " << (i + 1) << ", but " << *argType << " found"), ast->args[i]->location()};
-            }
-            ast->setType(ft->returnType());
+          Type * t = typecheck(ast->function);
+          FunctionType * ft = nullptr;
+          if (t->isPointer()) {
+              PointerType* ptr = dynamic_cast<PointerType*>(t);
+              ft = dynamic_cast<FunctionType*>(ptr->base());
+          } else {
+            ft = dynamic_cast<FunctionType*>(t);
+          }
+          if (ft == nullptr)
+            throw TypeError{STR("Expected function, but value of " << *t << " found"), ast->location()};
+          if (ast->args.size() != ft->numArgs())
+            throw TypeError{STR("Function of type " << *ft << " requires " << ft->numArgs() << " arguments, but " << ast->args.size() << " given"), ast->location()};
+          for (size_t i = 0; i < ast->args.size(); ++i) {
+            Type * argType = typecheck(ast->args[i]);
+            if (argType != ft->arg(i))
+              throw TypeError{STR("Type " << *(ft->arg(i)) << " expected for argument " << (i + 1) << ", but " << *argType << " found"), ast->args[i]->location()};
+          }
+          ast->setType(ft->returnType());
         }
 
         /** In C-like languages, from typechecking perspective, casting is really trivial.
