@@ -271,18 +271,18 @@ namespace tiny {
           "Binary operator is not supported for " << *left << "and" << *right);
 
           if (ast->op == Symbol::Mul || ast->op == Symbol::Add || ast->op == Symbol::Div || ast->op == Symbol::Sub) {
+            ASSERT_TYPE(!left->isPointer() && !right->isPointer(),
+                        "Arithmetic binary operator is not supported for pointers");
             ASSERT_TYPE(left->convertsImplicitlyTo(right) || right->convertsImplicitlyTo(left),
-                        "Arithmetic operator is not supported for " << *left << "and " << *right);
+                        "Arithmetic binary operator is not supported for " << *left << "and " << *right);
             ast->setType(getArithmeticResult(left, right));
           } else if (ast->op == Symbol::Mod) {
             ASSERT_TYPE(left->convertsImplicitlyTo(Type::getInt()) && right->convertsImplicitlyTo(Type::getInt()),
                         "Mod operator is not supported for " << *left << "and " << *right);
-            // do we need to promote left and right to int here?
             ast->setType(Type::getInt());
           } else if (ast->op == Symbol::ShiftLeft || ast->op == Symbol::ShiftRight) {
             ASSERT_TYPE(left->convertsImplicitlyTo(Type::getInt()) && right->convertsImplicitlyTo(Type::getInt()),
                         "Shift operator is not supported for " << *left << "and " << *right);
-            // do we need to promote left and right to int here?
             ast->setType(Type::getInt());
           } else if (ast->op == Symbol::Lt || ast->op == Symbol::Lte || ast->op == Symbol::Eq ||
                   ast->op == Symbol::NEq || ast->op == Symbol::Gt || ast->op == Symbol::Gte ||
@@ -293,7 +293,6 @@ namespace tiny {
           } else if (ast->op == Symbol::BitAnd || ast->op == Symbol::BitOr) {
             ASSERT_TYPE(left->convertsImplicitlyTo(Type::getInt()) && right->convertsImplicitlyTo(Type::getInt()),
                         "Bitwise operator is not supported for " << *left << "and " << *right);
-            // do we need to promote left and right to int here?
             ast->setType(Type::getInt());
           }
         }

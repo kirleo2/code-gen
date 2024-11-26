@@ -71,8 +71,9 @@ namespace tiny {
         void visit(ASTIdentifier* ast) override {
           // TODO How to deal with structures?
           auto local = getLocal(ast->name);
+          _last_result = local.first;
+          std::cout << "Translating ASTIdentifier name: " << ast->name << std::endl;
           if (lValue_) {
-            _last_result = local.first;
             lValue_ = false;
           } else {
             ASSERT(llvm::isa<llvm::AllocaInst>(local.first));
@@ -84,6 +85,7 @@ namespace tiny {
         void visit(ASTType* ast) override { MARK_AS_UNUSED(ast); UNREACHABLE;  }
         void visit(ASTPointerType* ast) override { MARK_AS_UNUSED(ast); UNREACHABLE; }
         void visit(ASTArrayType* ast) override {
+          // here we should manually allocate array
           MARK_AS_UNUSED(ast); UNREACHABLE;
 //          auto element_type = translateAST(ast->base.get());
 //          auto size = llvm::dyn_cast<llvm::ConstantInt> (translateAST(ast->size.get()));
@@ -258,43 +260,77 @@ namespace tiny {
         
         void visit(ASTBinaryOp* ast) override {
           std::cout << "Translating binop " << ast->op << std::endl;
-          auto lhs = translate(ast->left);
-          lhs = createCast(lhs, getLLVMType(ast->type()));
-          auto rhs = translate(ast->right);
-          rhs = createCast(rhs, getLLVMType(ast->type()));
+          // Always translate lhs to current BB
+          llvm::Value* lhs = createCast(translate(ast->left), getLLVMType(ast->type()));
+          llvm::Value* rhs = nullptr;
+          // Operators && and || need special treatment,
+          // because we do not want to evaluate both of conditionds
+          // always and we want to use PHI node to choose control flow
+          if (ast->op == Symbol::And || ast->op == Symbol::Or) {
+            // Create BB for rhs condition and evaluate it inside, because we want to jump there based
+            // on the lhs condition
+            llvm::BasicBlock* cond_rhs = llvm::BasicBlock::Create(*_context,"cond_rhs", _func);
+            _bb = cond_rhs;
+            rhs = createCast(translate(ast->right), getLLVMType(ast->type()));
 
-          // TODO: Pointer arithmetic?
-          if (ast->op == Symbol::Add) {
-            _last_result = llvm::BinaryOperator::CreateAdd(lhs, rhs, "sum", _bb);
-          } else if (ast->op == Symbol::BitAnd) {
-            _last_result = llvm::BinaryOperator::CreateAnd(lhs, rhs, "and", _bb);
-          } else if (ast->op == Symbol::BitOr) {
-            _last_result = llvm::BinaryOperator::CreateOr(lhs, rhs, "or", _bb);
-          } else if (ast->op == Symbol::Sub) {
-            _last_result = llvm::BinaryOperator::CreateSub(lhs, rhs, "sub", _bb);
-          } else if (ast->op == Symbol::Mul) {
-            _last_result = llvm::BinaryOperator::CreateMul(lhs, rhs, "mul", _bb);
-          } else if (ast->op == Symbol::Div) {
-            _last_result = llvm::BinaryOperator::CreateSDiv(lhs, rhs, "sdiv", _bb);
-          } else if (ast->op == Symbol::Xor) {
-            _last_result = llvm::BinaryOperator::CreateXor(lhs, rhs, "xor", _bb);
-          } else if (ast->op == Symbol::Lt) {
-            _last_result = llvm::ICmpInst::Create(llvm::Instruction::ICmp, llvm::ICmpInst::ICMP_SLT, lhs, rhs, "lt", _bb);
-          } else if (ast->op == Symbol::Lte) {
-            _last_result = llvm::ICmpInst::Create(llvm::Instruction::ICmp, llvm::ICmpInst::ICMP_SLE, lhs, rhs, "lte", _bb);
-          } else if (ast->op == Symbol::Gt) {
-            _last_result = llvm::ICmpInst::Create(llvm::Instruction::ICmp, llvm::ICmpInst::ICMP_SGT, lhs, rhs, "gt", _bb);
-          } else if (ast->op == Symbol::Gte) {
-            _last_result = llvm::ICmpInst::Create(llvm::Instruction::ICmp, llvm::ICmpInst::ICMP_SGE, lhs, rhs, "gte", _bb);
-          } else if (ast->op == Symbol::Eq) {
-            _last_result = llvm::ICmpInst::Create(llvm::Instruction::ICmp, llvm::ICmpInst::ICMP_EQ, lhs, rhs, "eq", _bb);
-          } else if (ast->op == Symbol::NEq) {
-            _last_result = llvm::ICmpInst::Create(llvm::Instruction::ICmp, llvm::ICmpInst::ICMP_NE, lhs, rhs, "neq", _bb);
-          }  else if (ast->op == Symbol::And) {
-            // TODO
+            // Intermediate represents evaluation result of lhs. False in case of && and true in case of ||.
+            llvm::BasicBlock* intermediate = llvm::BasicBlock::Create(*_context, "intermediate", _func);
+
+            // End of operator
+            llvm::BasicBlock* end = llvm::BasicBlock::Create(*_context, "end_of_logical_binop", _func);
+            llvm::BranchInst::Create(end, cond_rhs);
+            llvm::BranchInst::Create(end, intermediate);
+
+            // PHI Node represents the control flow
+            llvm::PHINode* result = llvm::PHINode::Create(getLLVMType(ast->type()), 2, "result", end);
+
+            result->addIncoming(lhs, intermediate);
+            result->addIncoming(rhs, cond_rhs);
+
+            if (ast->op == Symbol::And) {
+              // Do not evaluate cond_rhs if lhs is false
+              llvm::BranchInst::Create(cond_rhs, intermediate, lhs, _bb);
+            } else {
+              // Do not evaluate cond_rhs if lhs is true
+              llvm::BranchInst::Create(intermediate, cond_rhs, lhs, _bb);
+            }
+
+            // exit evaluation
+            _bb = end;
           } else {
-            std::cout << "OPERATOR:" << ast->op.name() << std::endl;
-            UNREACHABLE;
+            rhs = createCast(translate(ast->right), getLLVMType(ast->type()));
+            if (ast->op == Symbol::Add) {
+              _last_result = llvm::BinaryOperator::CreateAdd(lhs, rhs, "sum", _bb);
+            } else if (ast->op == Symbol::BitAnd) {
+              _last_result = llvm::BinaryOperator::CreateAnd(lhs, rhs, "and", _bb);
+            } else if (ast->op == Symbol::BitOr) {
+              _last_result = llvm::BinaryOperator::CreateOr(lhs, rhs, "or", _bb);
+            } else if (ast->op == Symbol::Sub) {
+              _last_result = llvm::BinaryOperator::CreateSub(lhs, rhs, "sub", _bb);
+            } else if (ast->op == Symbol::Mul) {
+              _last_result = llvm::BinaryOperator::CreateMul(lhs, rhs, "mul", _bb);
+            } else if (ast->op == Symbol::Div) {
+              _last_result = llvm::BinaryOperator::CreateSDiv(lhs, rhs, "div", _bb);
+            } else if (ast->op == Symbol::Mod)  {
+              _last_result = llvm::BinaryOperator::CreateSRem(lhs, rhs, "mod", _bb);
+            } else if (ast->op == Symbol::Xor) {
+              _last_result = llvm::BinaryOperator::CreateXor(lhs, rhs, "xor", _bb);
+            } else if (ast->op == Symbol::Lt) {
+              _last_result = llvm::ICmpInst::Create(llvm::Instruction::ICmp, llvm::ICmpInst::ICMP_SLT, lhs, rhs, "lt", _bb);
+            } else if (ast->op == Symbol::Lte) {
+              _last_result = llvm::ICmpInst::Create(llvm::Instruction::ICmp, llvm::ICmpInst::ICMP_SLE, lhs, rhs, "lte", _bb);
+            } else if (ast->op == Symbol::Gt) {
+              _last_result = llvm::ICmpInst::Create(llvm::Instruction::ICmp, llvm::ICmpInst::ICMP_SGT, lhs, rhs, "gt", _bb);
+            } else if (ast->op == Symbol::Gte) {
+              _last_result = llvm::ICmpInst::Create(llvm::Instruction::ICmp, llvm::ICmpInst::ICMP_SGE, lhs, rhs, "gte", _bb);
+            } else if (ast->op == Symbol::Eq) {
+              _last_result = llvm::ICmpInst::Create(llvm::Instruction::ICmp, llvm::ICmpInst::ICMP_EQ, lhs, rhs, "eq", _bb);
+            } else if (ast->op == Symbol::NEq) {
+              _last_result = llvm::ICmpInst::Create(llvm::Instruction::ICmp, llvm::ICmpInst::ICMP_NE, lhs, rhs, "neq", _bb);
+            } else {
+              std::cout << "OPERATOR:" << ast->op.name() << std::endl;
+              UNREACHABLE;
+            }
           }
         }
 
@@ -398,24 +434,54 @@ namespace tiny {
         }
 
         void visit(ASTIndex* ast) override {
-          auto index = translate(ast->index);
-          ASSERT(llvm::isa<llvm::Constant>(index));
-          auto alloca = translateLValue(ast->base);
-          _last_result = llvm::GetElementPtrInst::Create(llvm::cast<llvm::AllocaInst>(alloca)->getAllocatedType(), alloca, {index}, "addr", _bb);
+          // Do not propogate current lvalue deeper
+          bool old_lvalue = lValue_;
+          lValue_ = false;
+
+          ASSERT(ast->base->type()->isPointer());
+          llvm::Value* ptr = translate(ast->base);
+          PointerType* ptr_type = dynamic_cast<PointerType*>(ast->base->type());
+
+          llvm::Value* index = translate(ast->index);
+          ASSERT(index->getType()->isIntegerTy());
+
+          // apply current Lvalue
+          lValue_ = old_lvalue;
+
+          // ptr + index
+          _last_result = llvm::GetElementPtrInst::Create(getLLVMType(ptr_type->base()), ptr, {index}, "ptr+index", _bb);
+          if (lValue_) {
+            lValue_ = false;
+          } else {
+            _last_result = new llvm::LoadInst(getLLVMType(ptr_type->base()), _last_result, "*(ptr+index)", _bb);
+          }
         }
 
         void visit(ASTMember* ast) override {
+          // Do not propogate current lvalue deeper
+          bool old_lvalue = lValue_;
+          lValue_ = false;
+
+          std::cout << "Member: " << ast->member << std::endl;
           llvm::Value* struct_ = translateLValue(ast->base);
-          ASSERT(struct_ != nullptr);
+          ASSERT(struct_ != nullptr && struct_->getType()->isPointerTy());
           StructType* structType = dynamic_cast<StructType*>(ast->base->type());
+
+          // apply current Lvalue
+          lValue_ = old_lvalue;
+
           // get the pointer the member and load its value
           for (size_t i = 0; i < structType->fieldCount(); i++) {
             if ((*structType)[i].first == ast->member) {
-              auto ptr = llvm::GetElementPtrInst::Create(getLLVMType(ast->base->type()), struct_,
+              _last_result = llvm::GetElementPtrInst::Create(getLLVMType(ast->base->type()), struct_,
                                               {llvm::ConstantInt::get(llvm::Type::getInt32Ty(*_context), 0),
-                                               llvm::ConstantInt::get(llvm::Type::getInt32Ty(*_context), i)}, "GEP", _bb);
-              assert(ptr != nullptr);
-              _last_result = new llvm::LoadInst(getLLVMType((*structType)[i].second), ptr, ast->member.name(), _bb);
+                                               llvm::ConstantInt::get(llvm::Type::getInt32Ty(*_context), i)}, ".member", _bb);
+              assert(_last_result != nullptr);
+              if (lValue_) {
+                lValue_ = false;
+              } else {
+                _last_result = new llvm::LoadInst(getLLVMType((*structType)[i].second), _last_result, ast->member.name(), _bb);
+              }
               return;
             }
           }
@@ -427,7 +493,12 @@ namespace tiny {
         }
 
         void visit(ASTCall* ast) override {
-          auto func = translateLValue(ast->function);
+          llvm::Value* func = nullptr;
+          if (ast->function->type()->isPointer()) {
+            func = translate(ast->function);
+          } else {
+            func = translateLValue(ast->function);
+          }
           ASSERT(llvm::isa<llvm::Function>(func));
           std::vector<llvm::Value*> args;
           for (const auto & arg: ast->args) {
@@ -503,8 +574,8 @@ namespace tiny {
         bool old = lValue_;
         lValue_ = true;
         visitChild(child.get());
-        return _last_result;
         lValue_ = old;
+        return _last_result;
       }
 
         /** Adds the given instruction to the program, adding it to the current basic block, which should not be terminated. 
