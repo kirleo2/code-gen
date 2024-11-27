@@ -82,7 +82,11 @@ namespace tiny {
          */
         void visit(ASTArrayType * ast) override {
           Type * base = typecheck(ast->base);
-          ast->setType(Type::getPointerTo(base));
+          typecheck(ast->size);
+          PointerType* ptr_type = Type::getPointerTo(base);
+          // hack to propagate 'array'
+          ptr_type->setIsArray();
+          ast->setType(ptr_type);
         }
         
         /** For a named type, we need it to be present in the known types, otherwise it is a failure. 

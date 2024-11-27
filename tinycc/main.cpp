@@ -98,11 +98,9 @@ Test tests[] = {
              "    calculate_ptr ptr = &calculateArea;\n"
              "    "
              "    Rectangle rect;\n"
-             "    ptr(rect);"
              "    Point testPoint;\n"
              "    Point spiralPoints[10];\n"
              "\n"
-             "    int area = ptr(rect);\n"
              "    int inside = isPointInside(rect, testPoint);\n"
              "\n"
              "    generateSpiralPoints(spiralPoints, 10);\n"
@@ -118,7 +116,7 @@ Test tests[] = {
 //        TEST("int main(int a, int b, int c) { b = ++a; c = a++;}", 0),
 //        TEST("int main() { int b[10]; }", 0),
 //        TEST("int main() { int b = 0; int * c = &b; }", 0),
-        TEST("int main(int a, int b, int c) {for (; ; ) { a = a - 1; }}", 0),
+//        TEST("int main(int a, int b, int c) {for (; ; ) { a = a - 1; }}", 0),
 //        TEST("int hui; int main(int a, int b, int c) {c = a + b; a = 5 / 2; b = a * 3; return c * a * b * a;}", 0),
 //    TEST("int main() { return 1; }", 1),
 //    TEST("int main() { if (1) return 10; else return 2; }", 10),

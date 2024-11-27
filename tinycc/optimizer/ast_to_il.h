@@ -61,15 +61,15 @@ namespace tiny {
 
         /** Translating string literals is a bit harder - each string literal is deduplicated and stored as a new global variable that is also initialized with the contents of the literal. 
          */
-        void visit(ASTString* ast) override { 
-            MARK_AS_UNUSED(ast);
-            NOT_IMPLEMENTED;
+        void visit(ASTString* ast) override {
+          auto str = llvm::ConstantDataArray::getString(*_context, ast->value, true);
+          _last_result = new llvm::GlobalVariable(*_module, getLLVMType(ast->type()), true, llvm::GlobalValue::ExternalLinkage,
+                                                  str, "string");
         }
 
         /** Identifier is translated as a variable read. Note that this is as the address. 
         */
         void visit(ASTIdentifier* ast) override {
-          // TODO How to deal with structures?
           auto local = getLocal(ast->name);
           _last_result = local.first;
           std::cout << "Translating ASTIdentifier name: " << ast->name << std::endl;
@@ -79,18 +79,14 @@ namespace tiny {
             ASSERT(llvm::isa<llvm::AllocaInst>(local.first));
             _last_result = new llvm::LoadInst(getLLVMType(ast->type()), _last_result, ast->name.name(), _bb);
           }
-
         }
 
         void visit(ASTType* ast) override { MARK_AS_UNUSED(ast); UNREACHABLE;  }
         void visit(ASTPointerType* ast) override { MARK_AS_UNUSED(ast); UNREACHABLE; }
         void visit(ASTArrayType* ast) override {
-          // here we should manually allocate array
-          MARK_AS_UNUSED(ast); UNREACHABLE;
-//          auto element_type = translateAST(ast->base.get());
-//          auto size = llvm::dyn_cast<llvm::ConstantInt> (translateAST(ast->size.get()));
-//          ASSERT(size != nullptr);
-//          _last_result = (llvm::Value*) llvm::ArrayType::get((llvm::Type*)element_type, size->getZExtValue());
+          // TODO: better approach, now we translate the size to propagate it into ASTVarDecl
+          _last_result = translate(ast->size);
+          ASSERT(_last_result->getType()->isIntegerTy());
         }
         void visit(ASTNamedType* ast) override { MARK_AS_UNUSED(ast); UNREACHABLE; }
 
@@ -111,14 +107,27 @@ namespace tiny {
         }
 
         void visit(ASTVarDecl* ast) override {
-          auto t = getLLVMType(ast->type());
+          // Hack with arrays: We treat them as usual pointers during typechecking,
+          // but we want to transtale it to array allocation here in IR phase, so
+          // we need this special check
+          llvm::Value* alloc_size = nullptr;
+          llvm::Type* t = nullptr;
+          if (ast->varType->type()->isArray()) {
+            // global arrays are not implemented
+            ASSERT(_func);
+            alloc_size = translate(ast->varType);
+            t = getLLVMType(dynamic_cast<PointerType*>(ast->varType->type())->base());
+          } else {
+            alloc_size = llvm::ConstantInt::get(getLLVMType(Type::getInt()), 1);
+            t = getLLVMType(ast->varType->type());
+          }
           auto val = ast->value != nullptr ? translate(ast->value) : nullptr;
           // We need to distinguish whether we are in the global context or inside the function
           if (_func == nullptr) {
             _last_result = new llvm::GlobalVariable(*_module, t, false, llvm::GlobalValue::ExternalLinkage,
                                                     (llvm::Constant*)val, ast->name->name.name());
           } else {
-            _last_result = new llvm::AllocaInst(t, 0, ast->name->name.name(), _bb);
+            _last_result = new llvm::AllocaInst(t, 0, alloc_size, ast->name->name.name(), _bb);
           }
           pushLocal(ast->name->name, _last_result, ast->type());
           if (_func != nullptr && ast->value != nullptr) {
@@ -149,33 +158,15 @@ namespace tiny {
           }
           translate(ast->body);
           leaveFunction();
-
-////            Function * f = enterFunction(ast->name);
-//            for (size_t i = 0, e = ast->args.size(); i != e; ++i) {
-//                Symbol name = ast->args[i].second->name;
-//                Instruction *arg = ARG(registerTypeFor(ast->args[i].first->type()), static_cast<int64_t>(i), ast->args[i].first.get(), name.name());
-//                // now we need to create a local copy of the value so that it acts as a variable
-//                Type * t = ast->args[i].first->type();
-//                if (t->isPointer() || t->isNumeric()) {
-//                    Instruction * addr = addVariable(name, static_cast<int64_t>(ast->args[i].first->type()->size()));
-//                    (*this) += ST(addr, arg);
-//                } else {
-//                    _contexts.back().locals.insert(std::make_pair(name, arg));
-//                }
-//            }
-//            translate(ast->body);
-//            if (! bb_->terminated())
-//                (*this) += RET();
-//          _last_result = llvm::ReturnInst::Create(_context, ReturnValue, _bb);
         }
 
         /** Nothing to do for a struct declaration in the translation phase, the type has been created by the typechecker already.
          */ 
-        void visit(ASTStructDecl* ast) override { MARK_AS_UNUSED(ast); lastResult_ = nullptr; }
+        void visit(ASTStructDecl* ast) override { MARK_AS_UNUSED(ast); _last_result = nullptr; }
 
         /** Nothing to do for a function ptr declaration in the translation phase, the type has already been created by the typechecker.
          */
-        void visit(ASTFunPtrDecl* ast) override {MARK_AS_UNUSED(ast); lastResult_ = nullptr; }
+        void visit(ASTFunPtrDecl* ast) override {MARK_AS_UNUSED(ast); _last_result = nullptr; }
 
         void visit(ASTIf* ast) override {
           auto cmp = translate(ast->cond);
@@ -194,14 +185,30 @@ namespace tiny {
           _bb = if_exit;
         }
 
-        void visit(ASTSwitch* ast) override { 
+        void visit(ASTSwitch* ast) override {
             MARK_AS_UNUSED(ast);
             NOT_IMPLEMENTED;
         }
 
-        void visit(ASTWhile* ast) override { 
-            MARK_AS_UNUSED(ast);
-            NOT_IMPLEMENTED;
+        void visit(ASTWhile* ast) override {
+          auto cond = llvm::BasicBlock::Create(*_context, "loop_condition", _func);
+          auto loop_body = llvm::BasicBlock::Create(*_context, "loop_body", _func);
+          auto loop_exit = llvm::BasicBlock::Create(*_context, "loop_exit", _func);
+
+          auto old_break = _break_target;
+          auto old_continue = _continue_target;
+
+          llvm::BranchInst::Create(cond, _bb);
+          auto cmp = translate(ast->cond);
+          llvm::BranchInst::Create(loop_body, loop_exit, cmp, _bb);
+
+          _bb = loop_body;
+          translate(ast->body);
+
+          _bb = loop_exit;
+          // restore break and continue targets
+          _break_target = old_break;
+          _continue_target = old_continue;
         }
 
         void visit(ASTDoWhile* ast) override { 
@@ -216,29 +223,36 @@ namespace tiny {
           auto loop_body = llvm::BasicBlock::Create(*_context, "loop_body", _func);
           auto loop_exit = llvm::BasicBlock::Create(*_context, "loop_exit", _func);
           auto loop_inc = llvm::BasicBlock::Create(*_context, "loop_inc", _func);
+
           auto old_break = _break_target;
           auto old_continue = _continue_target;
           _break_target = loop_exit;
           _continue_target = loop_inc;
-          // initialize loop
-          visitChild(ast->init.get());
+          // initialize loop (may be NULL)
+          if (ast->init) translate(ast->init);
           llvm::BranchInst::Create(cond, _bb);
-          // start loop with condition check
+          // start loop with condition check, may be NULL
           _bb = cond;
-          auto cmp = translate(ast->cond);
-          llvm::BranchInst::Create(loop_body, loop_exit, cmp, _bb);
+          if (ast->cond) {
+            auto cmp = translate(ast->cond);
+            llvm::BranchInst::Create(loop_body, loop_exit, cmp, _bb);
+          } else {
+            // if NULL we do jump always
+            llvm::BranchInst::Create(loop_body, _bb);
+          }
           // translate body
+          ASSERT(ast->body);
           _bb = loop_body;
-          visitChild(ast->body.get());
+          translate(ast->body);
           llvm::BranchInst::Create(loop_inc, _bb);
           _bb = loop_inc;
-          visitChild(ast->increment.get());
+          // may be NULL
+          if (ast->increment) translate(ast->increment);
           llvm::BranchInst::Create(cond, _bb);
           _bb = loop_exit;
           // restore break and continue targets
           _break_target = old_break;
           _continue_target = old_continue;
-
         }
 
         void visit(ASTBreak* ast) override {
@@ -422,74 +436,94 @@ namespace tiny {
         }
 
         void visit(ASTAddress* ast) override {
-          auto target = translateLValue(ast->target);
-          auto base_index = llvm::ConstantInt::get(llvm::Type::getInt32Ty(*_context), 0);
-          _last_result = llvm::GetElementPtrInst::Create(target->getType(), target, {base_index}, "addr", _bb);
+          // just fetch the lvalue, it will be a pointer to allocated memory
+          _last_result = translateLValue(ast->target);
         }
 
-        void visit(ASTDeref* ast) override {
-          // do not know how to do.... with opaque pointer types
-          auto target = translate(ast->target);
-          _last_result = new llvm::LoadInst(target->getType(), target, "", _bb);
-        }
-
-        void visit(ASTIndex* ast) override {
+        llvm::Value* dereference(AST * ast, AST * index = nullptr) {
+          ASSERT(ast->type()->isPointer());
           // Do not propogate current lvalue deeper
+          llvm::Value* result = nullptr;
           bool old_lvalue = lValue_;
           lValue_ = false;
 
-          ASSERT(ast->base->type()->isPointer());
-          llvm::Value* ptr = translate(ast->base);
-          PointerType* ptr_type = dynamic_cast<PointerType*>(ast->base->type());
+          // load the pointer value
+          visitChild(ast);
+          llvm::Value* ptr = _last_result;
+          PointerType* ptr_type = dynamic_cast<PointerType*>(ast->type());
 
-          llvm::Value* index = translate(ast->index);
-          ASSERT(index->getType()->isIntegerTy());
+          if (index != nullptr) {
+            visitChild(index);
+            ASSERT(_last_result->getType()->isIntegerTy());
+            ptr = llvm::GetElementPtrInst::Create(getLLVMType(ptr_type->base()), ptr, {_last_result}, "ptr+index", _bb);
+          }
 
           // apply current Lvalue
           lValue_ = old_lvalue;
 
-          // ptr + index
-          _last_result = llvm::GetElementPtrInst::Create(getLLVMType(ptr_type->base()), ptr, {index}, "ptr+index", _bb);
+          // load the pointee value
           if (lValue_) {
             lValue_ = false;
+            result = ptr;
           } else {
-            _last_result = new llvm::LoadInst(getLLVMType(ptr_type->base()), _last_result, "*(ptr+index)", _bb);
+            result = new llvm::LoadInst(getLLVMType(ptr_type->base()), _last_result, "*(ptr + index)", _bb);
           }
+          return result;
         }
 
-        void visit(ASTMember* ast) override {
+        void visit(ASTDeref* ast) override {
+          _last_result = dereference(ast->target.get());
+        }
+
+        void visit(ASTIndex* ast) override {
+          _last_result = dereference(ast->base.get(), ast->index.get());
+        }
+
+        llvm::Value* extractMember(std::unique_ptr<AST> & base, const Symbol & member, bool deref=false) {
           // Do not propogate current lvalue deeper
+          llvm::Value* result = nullptr;
           bool old_lvalue = lValue_;
           lValue_ = false;
 
-          std::cout << "Member: " << ast->member << std::endl;
-          llvm::Value* struct_ = translateLValue(ast->base);
-          ASSERT(struct_ != nullptr && struct_->getType()->isPointerTy());
-          StructType* structType = dynamic_cast<StructType*>(ast->base->type());
+          std::cout << "Member: " << member << std::endl;
+          llvm::Value* struct_ = nullptr;
+          if (deref) {
+            struct_ = translate(base);
+          } else {
+            struct_ = translateLValue(base);
+          }
+          assert(struct_ != nullptr);
+          ASSERT(struct_->getType()->isPointerTy());
+          StructType* structType = dynamic_cast<StructType*>(base->type());
 
           // apply current Lvalue
           lValue_ = old_lvalue;
 
           // get the pointer the member and load its value
           for (size_t i = 0; i < structType->fieldCount(); i++) {
-            if ((*structType)[i].first == ast->member) {
-              _last_result = llvm::GetElementPtrInst::Create(getLLVMType(ast->base->type()), struct_,
-                                              {llvm::ConstantInt::get(llvm::Type::getInt32Ty(*_context), 0),
-                                               llvm::ConstantInt::get(llvm::Type::getInt32Ty(*_context), i)}, ".member", _bb);
-              assert(_last_result != nullptr);
+            if ((*structType)[i].first == member) {
+              result = llvm::GetElementPtrInst::Create(getLLVMType(base->type()), struct_,
+                                                             {llvm::ConstantInt::get(llvm::Type::getInt32Ty(*_context), 0),
+                                                              llvm::ConstantInt::get(llvm::Type::getInt32Ty(*_context), i)}, ".member", _bb);
+              assert(result != nullptr);
               if (lValue_) {
                 lValue_ = false;
               } else {
-                _last_result = new llvm::LoadInst(getLLVMType((*structType)[i].second), _last_result, ast->member.name(), _bb);
+                result = new llvm::LoadInst(getLLVMType((*structType)[i].second), result, member.name(), _bb);
               }
-              return;
+              return result;
             }
           }
+
+          UNREACHABLE;
+          return result;
+        }
+        void visit(ASTMember* ast) override {
+          _last_result = extractMember(ast->base, ast->member);
         }
 
-        void visit(ASTMemberPtr* ast) override { 
-            MARK_AS_UNUSED(ast);
-            NOT_IMPLEMENTED;
+        void visit(ASTMemberPtr* ast) override {
+          _last_result = extractMember(ast->base, ast->member, true);
         }
 
         void visit(ASTCall* ast) override {
@@ -578,15 +612,6 @@ namespace tiny {
         return _last_result;
       }
 
-        /** Adds the given instruction to the program, adding it to the current basic block, which should not be terminated. 
-         */
-        ASTToILTranslator & operator += (Instruction * ins) {
-            ASSERT(bb_ != nullptr);
-            bb_->append(ins);
-            lastResult_ = ins;
-            return *this;
-        }
-
         struct Context {
             std::unordered_map<Symbol, Instruction *> locals;
             BasicBlock * localsBlock = nullptr;
@@ -597,16 +622,6 @@ namespace tiny {
 
         }; // ASTToILTranslator::Context
 
-        Function * enterFunction(Symbol name) {
-//            ASSERT(f_ == nullptr);
-//            f_ = p_.addFunction(name);
-//            Instruction * fReg = FUN(name, name.name());
-//            p_.globals()->append(fReg);
-//            bb_ = f_->addBasicBlock("prolog");
-//            _contexts.push_back(Context{bb_});
-//            _contexts.front().locals.insert(std::make_pair(name, fReg));
-//            return f_;
-        }
 
         void leaveFunction() {
             _environments.pop_back();
@@ -680,14 +695,6 @@ namespace tiny {
           return llvm_type;
         }
 
-        /** Creates new local variable with given name and size. The variable's ALLOCA instruction is appended to the current block's local definitions basic block and the register containing the address is returned. 
-         */
-        Instruction * addVariable(Symbol name, size_t size) {
-            Instruction * res = _contexts.back().localsBlock->append(ALLOCA(RegType::Int, static_cast<int64_t>(size), name.name()));
-            _contexts.back().locals.insert(std::make_pair(name, res));
-            return res;
-        }
-
         void pushLocal(Symbol name, llvm::Value* val, Type* type) {
           _environments.back().insert(std::make_pair(name, std::make_pair(val, type)));
         }
@@ -715,10 +722,6 @@ namespace tiny {
         std::unordered_map<Type*, llvm::Type*> _type_cache;
 
         Program p_;
-        std::vector<Context> _contexts;
-        Instruction * lastResult_ = nullptr;
-        BasicBlock * bb_ = nullptr;
-        Function * f_ = nullptr;
         bool lValue_ = false;
 
 

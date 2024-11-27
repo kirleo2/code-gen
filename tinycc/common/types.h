@@ -52,6 +52,8 @@ namespace tiny {
 
         virtual bool isStruct() const { return false; }
 
+        virtual bool isArray() const { return false;}
+
         virtual bool isNumeric() const { return false; }
 
         virtual bool convertsImplicitlyTo(Type * other) const { return other == this; }
@@ -155,6 +157,8 @@ namespace tiny {
     }; // tiny::Simple
 
     class PointerType : public Type {
+    private:
+      bool _is_array = false;
     public:
 
         Type * base() const {
@@ -171,6 +175,10 @@ namespace tiny {
 
         bool isPointer() const override { return true; }
 
+        bool isArray() const override { return _is_array; }
+
+        void setIsArray() { _is_array = true; }
+
         /** A pointer converts implicitly to int type. 
          
             Also, an implicit converstion to void * would not be very wrong in TinyC's context. 
@@ -186,7 +194,7 @@ namespace tiny {
         friend class Type;
 
         PointerType(Type * base):
-            base_{base} {
+            base_{base}, _is_array(false) {
         }
 
         Type * base_;
