@@ -17,20 +17,22 @@ namespace tiny {
     public:
 
       ASTToILTranslator() {
-        _context = new llvm::LLVMContext();
-        _module = new llvm::Module("my module", *_context);
+        program.ctx = std::make_shared<llvm::LLVMContext>();
+        program.module = std::make_shared<llvm::Module>("module", *program.ctx);
+        _context = program.ctx.get();
+        _module = program.module.get();
         _environments.emplace_back();
       }
 
       ~ASTToILTranslator() {
         _module->print(llvm::outs(), nullptr);
-        delete _module;
+//        delete _module;
       }
 
         static Program translateProgram(std::unique_ptr<AST> const & root) {
             ASTToILTranslator t;
             t.translate(root);
-            return std::move(t.p_); 
+            return std::move(t.program);
         }
 
         void visit(AST * ast) override { 
@@ -538,7 +540,7 @@ namespace tiny {
           for (const auto & arg: ast->args) {
             args.push_back(translate(arg));
           }
-          llvm::CallInst::Create(llvm::cast<llvm::Function>(func)->getFunctionType(), func, args, "call", _bb);
+          _last_result = llvm::CallInst::Create(llvm::cast<llvm::Function>(func)->getFunctionType(), func, args, "call", _bb);
         }
 
         /* Does cast if types are different and this is possible */
@@ -721,8 +723,9 @@ namespace tiny {
 
         std::unordered_map<Type*, llvm::Type*> _type_cache;
 
-        Program p_;
         bool lValue_ = false;
+
+        Program program;
 
 
     }; // tiny::ASTToILTranslator

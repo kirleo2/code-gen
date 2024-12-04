@@ -6,6 +6,8 @@
 
 #include "common/colors.h"
 #include "frontend/ast.h"
+#include <llvm/IR/LLVMContext.h>
+#include <llvm/IR/Module.h>
 
 namespace tiny {
 
@@ -606,51 +608,12 @@ namespace tiny {
     private:
         std::vector<std::unique_ptr<Instruction>> args_;
         std::vector<std::unique_ptr<BasicBlock>> bbs_;
-    }; 
+    };
 
-    /** Program 
-     */
-    class Program {
-    public:
-
-        Function * addFunction(Symbol name){
-            Function * f = new Function{};
-            functions_.insert(std::make_pair(name, f));
-            return f;
-        }
-
-        BasicBlock const * globals() const {
-            return & globals_;
-        }
-
-        BasicBlock * globals() {
-            return & globals_;
-        }
-
-        Function const * getFunction(Symbol name) const {
-            auto i = functions_.find(name);
-            return (i == functions_.end()) ? nullptr : i->second;
-        }
-
-        void print(colors::ColorPrinter & p) const {
-            using namespace colors;
-            p << COMMENT("; globals") << NEWLINE << INDENT;
-            globals_.print(p);
-            p << DEDENT << NEWLINE << COMMENT("; number of functions: ") << functions_.size() << NEWLINE;
-            for (auto f : functions_) {
-                p << IDENT("function_") << f.first << SYMBOL(":") << INDENT;
-                f.second->print(p);
-                p << DEDENT << NEWLINE;
-            }
-        }
-
-    private:
-
-        BasicBlock globals_;
-        std::unordered_map<Symbol, Function *> functions_;
-    }; 
-
-
+  struct Program {
+    std::shared_ptr<llvm::LLVMContext> ctx;
+    std::shared_ptr<llvm::Module> module;
+  };
 
 } // namespace tiny
 

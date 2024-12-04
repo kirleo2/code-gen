@@ -45,7 +45,7 @@ namespace tiny {
             ast->setType(Type::getInt());
         }
 
-        void visit(ASTDouble * ast) override { 
+        void visit(ASTDouble * ast) override {
             ast->setType(Type::getDouble());
         }
         
