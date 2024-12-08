@@ -425,12 +425,11 @@ namespace tiny {
             ast->setType(target);
         }
 
-        /** tinyC only supports writing characters for now. So check we give it character and then type write as void so that it can't be used further.
-         */
-        void visit(ASTPrint * ast) override { 
-            if (typecheck(ast->value) != Type::getChar())
-                throw TypeError{STR("Write expects char, but" << *ast->value->type() << " found"), ast->location()};
-            ast->setType(Type::getVoid());
+        void visit(ASTPrint * ast) override {
+          auto type = typecheck(ast->value);
+          if (type != Type::getChar() && type != Type::getInt())
+            throw TypeError{STR("Write expects char, but" << *ast->value->type() << " found"), ast->location()};
+          ast->setType(Type::getVoid());
         }
 
         /** Reading returns always a character.
@@ -449,14 +448,16 @@ namespace tiny {
         }; 
 
         Typechecker() {
-            contexts_.push_back(Context{nullptr}); // the global scope
-            Type::resetTypeInformation();
-            // add stdlib functions
-            Type * int_f = Type::getFunction(std::vector{Type::getInt()});
-            Type * void_f_char = Type::getFunction(std::vector{Type::getVoid(), Type::getChar()});
-            // ok to pass nullptr here as ast, those are builtins and ast is only used for error reporting, there should be no errors here:)
-            addVariable(Symbol{"scan"}, int_f, /* ast */nullptr);
-            addVariable(Symbol{"print"}, void_f_char, /* ast */nullptr);
+          contexts_.push_back(Context{nullptr}); // the global scope
+          Type::resetTypeInformation();
+          // add stdlib functions
+          Type * scan = Type::getFunction(std::vector{Type::getChar()});
+          Type * print_char = Type::getFunction(std::vector{Type::getVoid(), Type::getChar()});
+          Type * print_int = Type::getFunction(std::vector{Type::getVoid(), Type::getInt()});
+          // ok to pass nullptr here as ast, those are builtins and ast is only used for error reporting, there should be no errors here:)
+          addVariable(Symbol{"scan"}, scan, /* ast */nullptr);
+          addVariable(Symbol{"printc"}, print_char, /* ast */nullptr);
+          addVariable(Symbol{"printi"}, print_int, /* ast */nullptr);
         }
 
         /** Enters a new function context. 

@@ -115,7 +115,7 @@ Test tests[] = {
 //        TEST("int foo (int a, int b) {return a + b; } int main() {return foo( 1, 2 );}"),
 //        TEST("int main(int a, int b, int c) { b = ++a; c = a++;}", 0),
 //        TEST("int main() { int b[10]; }", 0),
-        TEST("int main() { int b = 13; int a = 12; int c = a + b; return c; }", 0),
+        TEST("int main() { for (int abc = 1; abc < 9; abc++) { printi(abc); } return 0; }", 0),
 //        TEST("int main(int a, int b, int c) {for (; ; ) { a = a - 1; }}", 0),
 //        TEST("int hui; int main(int a, int b, int c) {c = a + b; a = 5 / 2; b = a * 3; return c * a * b * a;}", 0),
 //    TEST("int main() { return 1; }", 1),

@@ -14,6 +14,25 @@
 namespace tiny {
 
     class ASTToILTranslator : public ASTVisitor {
+
+    private:
+      void define_intrinsics() {
+        Type * scan = Type::getFunction(std::vector{Type::getChar()});
+        Type * print_char = Type::getFunction(std::vector{Type::getVoid(), Type::getChar()});
+        Type * print_int = Type::getFunction(std::vector{Type::getVoid(), Type::getInt()});
+
+        putchar = llvm::Function::Create(llvm::dyn_cast<llvm::FunctionType>(getLLVMType(print_char)),
+                  llvm::Function::ExternalLinkage, "putchar", *_module);
+        pushLocal(Symbol{"printc"}, putchar, print_char);
+
+        putint = llvm::Function::Create(llvm::dyn_cast<llvm::FunctionType>(getLLVMType(print_int)),
+                                         llvm::Function::ExternalLinkage, "putint", *_module);
+        pushLocal(Symbol{"printi"}, putint, print_int);
+
+        getchar = llvm::Function::Create(llvm::dyn_cast<llvm::FunctionType>(getLLVMType(scan)),
+                                         llvm::Function::ExternalLinkage, "getchar", *_module);
+        pushLocal(Symbol{"scan"}, getchar, scan);
+      }
     public:
 
       ASTToILTranslator() {
@@ -22,6 +41,7 @@ namespace tiny {
         _context = program.ctx.get();
         _module = program.module.get();
         _environments.emplace_back();
+        define_intrinsics();
       }
 
       ~ASTToILTranslator() {
@@ -316,33 +336,77 @@ namespace tiny {
           } else {
             rhs = createCast(translate(ast->right), getLLVMType(ast->type()));
             if (ast->op == Symbol::Add) {
-              _last_result = llvm::BinaryOperator::CreateAdd(lhs, rhs, "sum", _bb);
+              if (ast->type() == Type::getDouble()) {
+                _last_result = llvm::BinaryOperator::CreateFAdd(lhs, rhs, "fadd", _bb);
+              } else {
+                _last_result = llvm::BinaryOperator::CreateAdd(lhs, rhs, "add", _bb);
+              }
             } else if (ast->op == Symbol::BitAnd) {
               _last_result = llvm::BinaryOperator::CreateAnd(lhs, rhs, "and", _bb);
             } else if (ast->op == Symbol::BitOr) {
               _last_result = llvm::BinaryOperator::CreateOr(lhs, rhs, "or", _bb);
             } else if (ast->op == Symbol::Sub) {
-              _last_result = llvm::BinaryOperator::CreateSub(lhs, rhs, "sub", _bb);
+              if (ast->type() == Type::getDouble()) {
+                _last_result = llvm::BinaryOperator::CreateFSub(lhs, rhs, "fsub", _bb);
+              } else {
+                _last_result = llvm::BinaryOperator::CreateSub(lhs, rhs, "sub", _bb);
+              }
             } else if (ast->op == Symbol::Mul) {
-              _last_result = llvm::BinaryOperator::CreateMul(lhs, rhs, "mul", _bb);
+              if (ast->type() == Type::getDouble()) {
+                _last_result = llvm::BinaryOperator::CreateFMul(lhs, rhs, "fmul", _bb);
+              } else {
+                _last_result = llvm::BinaryOperator::CreateMul(lhs, rhs, "mul", _bb);
+              }
             } else if (ast->op == Symbol::Div) {
-              _last_result = llvm::BinaryOperator::CreateSDiv(lhs, rhs, "div", _bb);
+              if (ast->type() == Type::getDouble()) {
+                _last_result = llvm::BinaryOperator::CreateFDiv(lhs, rhs, "fdiv", _bb);
+              } else {
+                _last_result = llvm::BinaryOperator::CreateSDiv(lhs, rhs, "sdiv", _bb);
+              }
             } else if (ast->op == Symbol::Mod)  {
               _last_result = llvm::BinaryOperator::CreateSRem(lhs, rhs, "mod", _bb);
             } else if (ast->op == Symbol::Xor) {
               _last_result = llvm::BinaryOperator::CreateXor(lhs, rhs, "xor", _bb);
             } else if (ast->op == Symbol::Lt) {
-              _last_result = llvm::ICmpInst::Create(llvm::Instruction::ICmp, llvm::ICmpInst::ICMP_SLT, lhs, rhs, "lt", _bb);
+              if (ast->left->type() == Type::getDouble()) {
+                _last_result = llvm::CmpInst::Create(llvm::Instruction::FCmp, llvm::CmpInst::FCMP_OLT, lhs, rhs, "flt", _bb);
+              } else {
+                _last_result = llvm::CmpInst::Create(llvm::Instruction::ICmp, llvm::CmpInst::ICMP_SLT, lhs, rhs, "ilt", _bb);
+              }
             } else if (ast->op == Symbol::Lte) {
-              _last_result = llvm::ICmpInst::Create(llvm::Instruction::ICmp, llvm::ICmpInst::ICMP_SLE, lhs, rhs, "lte", _bb);
+              if (ast->left->type() == Type::getDouble()) {
+                _last_result = llvm::CmpInst::Create(llvm::Instruction::FCmp, llvm::CmpInst::FCMP_OLE, lhs, rhs, "lfte", _bb);
+              } else {
+                _last_result = llvm::CmpInst::Create(llvm::Instruction::ICmp, llvm::CmpInst::ICMP_SLE, lhs, rhs, "ilte", _bb);
+              }
             } else if (ast->op == Symbol::Gt) {
-              _last_result = llvm::ICmpInst::Create(llvm::Instruction::ICmp, llvm::ICmpInst::ICMP_SGT, lhs, rhs, "gt", _bb);
+              if (ast->left->type() == Type::getDouble()) {
+                _last_result = llvm::CmpInst::Create(llvm::Instruction::FCmp, llvm::CmpInst::FCMP_OGT, lhs, rhs, "fgt", _bb);
+              } else {
+                _last_result = llvm::CmpInst::Create(llvm::Instruction::ICmp, llvm::CmpInst::ICMP_SGT, lhs, rhs, "igt", _bb);
+              }
             } else if (ast->op == Symbol::Gte) {
-              _last_result = llvm::ICmpInst::Create(llvm::Instruction::ICmp, llvm::ICmpInst::ICMP_SGE, lhs, rhs, "gte", _bb);
+              if (ast->left->type() == Type::getDouble()) {
+                _last_result = llvm::CmpInst::Create(llvm::Instruction::FCmp, llvm::CmpInst::FCMP_OGE, lhs, rhs, "fge", _bb);
+              } else {
+                _last_result = llvm::CmpInst::Create(llvm::Instruction::ICmp, llvm::CmpInst::ICMP_SGE, lhs, rhs, "ige", _bb);
+              }
             } else if (ast->op == Symbol::Eq) {
-              _last_result = llvm::ICmpInst::Create(llvm::Instruction::ICmp, llvm::ICmpInst::ICMP_EQ, lhs, rhs, "eq", _bb);
+              if (ast->left->type() == Type::getDouble()) {
+                _last_result = llvm::CmpInst::Create(llvm::Instruction::FCmp, llvm::CmpInst::FCMP_OEQ, lhs, rhs, "feq", _bb);
+              } else {
+                _last_result = llvm::CmpInst::Create(llvm::Instruction::ICmp, llvm::CmpInst::ICMP_EQ, lhs, rhs, "ieq", _bb);
+              }
             } else if (ast->op == Symbol::NEq) {
-              _last_result = llvm::ICmpInst::Create(llvm::Instruction::ICmp, llvm::ICmpInst::ICMP_NE, lhs, rhs, "neq", _bb);
+              if (ast->left->type() == Type::getDouble()) {
+                _last_result = llvm::CmpInst::Create(llvm::Instruction::FCmp, llvm::CmpInst::FCMP_ONE, lhs, rhs, "fneq", _bb);
+              } else {
+                _last_result = llvm::CmpInst::Create(llvm::Instruction::ICmp, llvm::CmpInst::ICMP_NE, lhs, rhs, "ineq", _bb);
+              }
+            } else if (ast->op == Symbol::ShiftRight) {
+              _last_result = llvm::BinaryOperator::CreateAShr(lhs, rhs, "Ashr", _bb);
+            } else if (ast->op == Symbol::ShiftLeft) {
+              _last_result = llvm::BinaryOperator::CreateShl(lhs, rhs, "Shl", _bb);
             } else {
               std::cout << "OPERATOR:" << ast->op.name() << std::endl;
               UNREACHABLE;
@@ -585,14 +649,21 @@ namespace tiny {
           createCast(translate(ast->value), getLLVMType(ast->type->type()));
         }
 
-        void visit(ASTPrint* ast) override { 
-            MARK_AS_UNUSED(ast);
-            NOT_IMPLEMENTED;
+        void visit(ASTPrint* ast) override {
+          llvm::Function * intrinsic = nullptr;
+          std::string name;
+          if (ast->value->type() == Type::getChar()) {
+            intrinsic = putchar;
+            name = "putchar";
+          } else {
+            intrinsic = putint;
+            name = "putint";
+          }
+          _last_result = llvm::CallInst::Create(intrinsic->getFunctionType(), intrinsic, {translate(ast->value)}, name, _bb);
         }
 
-        void visit(ASTScan* ast) override { 
-            MARK_AS_UNUSED(ast);
-            NOT_IMPLEMENTED;
+        void visit(ASTScan* ast) override {
+          _last_result = llvm::CallInst::Create(getchar->getFunctionType(), getchar, {}, "getchar", _bb);
         }
 
     private:
@@ -709,6 +780,7 @@ namespace tiny {
                 if (it != _environments[i].end())
                     return it->second;
             }
+            UNREACHABLE;
             return {};
         }
 
@@ -720,6 +792,9 @@ namespace tiny {
         llvm::Value* _last_result = nullptr;
         llvm::Function * _func = nullptr;
         std::vector<std::unordered_map<Symbol, std::pair<llvm::Value*, Type*>>> _environments;
+        llvm::Function * putchar = nullptr;
+        llvm::Function * putint = nullptr;
+        llvm::Function * getchar = nullptr;
 
         std::unordered_map<Type*, llvm::Type*> _type_cache;
 

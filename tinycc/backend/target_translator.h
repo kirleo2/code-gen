@@ -50,7 +50,7 @@ public:
       if (F.isDeclaration()) continue; // Skip external functions
       size_t stackSize = calculateStackSize(F);
       // insert prolog
-      insertProlog(stackSize);
+      insertPrologue(stackSize);
       // Process each basic block within the function
       for (llvm::BasicBlock &BB : F) {
         bbToAddr[&BB] = instructionCounter;
@@ -61,7 +61,7 @@ public:
       assert(!bbToAddr.count(EPILOGUE));
       bbToAddr[EPILOGUE] = instructionCounter;
       // insert epilogue
-      insertEpilog(stackSize);
+      insertEpilogue();
       currentEpilogue++;
 
       // divide functions
@@ -83,7 +83,6 @@ private:
     }
   }
 
-
   size_t calculateTypeSize(llvm::Type* type) const {
     const llvm::DataLayout & layout = program.module->getDataLayout();
     size_t size = layout.getTypeSizeInBits(type);
@@ -104,15 +103,14 @@ private:
     return size;
   }
 
-  void insertProlog(size_t stackSize) {
+  void insertPrologue(size_t stackSize) {
     emitInstruction("PUSH BP");
     emitInstruction("MOV BP, SP");
     emitInstruction("SUB SP, " + std::to_string(stackSize));
-    // TODO: load function args from stack ?
   }
 
-  void insertEpilog(size_t stackSize) {
-    emitInstruction("ADD SP, " + std::to_string(stackSize));
+  void insertEpilogue() {
+    emitInstruction("MOV SP, BP");
     emitInstruction("POP BP");
     emitInstruction("RET");
   }
@@ -133,16 +131,41 @@ private:
       translateAlloca(*alloca);
     } else if (llvm::ReturnInst* retInst = llvm::dyn_cast<llvm::ReturnInst>(&I)) {
       translateReturn(*retInst);
+    } else if (llvm::CmpInst* cmpInst = llvm::dyn_cast<llvm::CmpInst>(&I)) {
+      translateCmpInst(*cmpInst);
+    } else if (llvm::GetElementPtrInst * gepInst = llvm::dyn_cast<llvm::GetElementPtrInst>(&I)) {
+      translateGepInst(*gepInst);
     } else {
         llvm::errs() << "Unsupported instruction: " << I << "\n";
         UNREACHABLE;
     }
   }
 
+  void translateGepInst(llvm::GetElementPtrInst & gepInst) {
+
+  }
+
+  void translateCmpInst(llvm::CmpInst & cmpInst) {
+    std::stringstream inst;
+    if (cmpInst.isIntPredicate()) {
+      inst << "CMP ";
+    } else {
+      assert(cmpInst.isFPPredicate());
+      inst << "FCMP ";
+    }
+    inst << getReg(cmpInst.getOperand(0)) << ", " << getReg(cmpInst.getOperand(1));
+    emitInstruction(inst);
+  }
+
   void translateReturn (llvm::ReturnInst & retInst) {
     // R0 will be return register
+    // TODO: Struct ABI
     llvm::Value* retVal = retInst.getReturnValue();
-    if (retVal != nullptr) {
+    if (retVal->getType()->isStructTy()) {
+      llvm::errs() << "Structs are not supported!" << "\n";
+      UNREACHABLE;
+    }
+    if (!retVal->getType()->isVoidTy()) {
       emitInstruction("MOV R0, " + getReg(retVal));
     }
     needToRelocate.emplace_back(instructionCounter, EPILOGUE);
@@ -159,27 +182,75 @@ private:
 
     std::stringstream inst;
 
-    if (binOp.getOpcode() == llvm::Instruction::Add) {
-      inst << "ADD " << getReg(lhs) << ", " << getReg(rhs);
-    } else if (binOp.getOpcode() == llvm::Instruction::Sub) {
-      inst << "SUB " << getReg(lhs) << ", " + getReg(rhs);
-    } else {
-      llvm::errs() << "Unsupported binary operation: " << binOp << "\n";
-      return;
+    switch (binOp.getOpcode()) {
+      case llvm::Instruction::Add:
+        inst << "ADD " << getReg(lhs) << ", " << getReg(rhs);
+        break;
+      case llvm::Instruction::FAdd:
+        inst << "FADD " << getReg(lhs) << ", " << getReg(rhs);
+        break;
+      case llvm::Instruction::Sub:
+        inst << "SUB " << getReg(lhs) << ", " << getReg(rhs);
+        break;
+      case llvm::Instruction::FSub:
+        inst << "FSUB " << getReg(lhs) << ", " << getReg(rhs);
+        break;
+      case llvm::Instruction::Mul:
+        inst << "IMUL " << getReg(lhs) << ", " << getReg(rhs);
+        break;
+      case llvm::Instruction::FMul:
+        inst << "FMUL " << getReg(lhs) << ", " << getReg(rhs);
+        break;
+      case llvm::Instruction::SDiv:
+        inst << "IDIV " << getReg(lhs) << ", " << getReg(rhs);
+        break;
+      case llvm::Instruction::FDiv:
+        inst << "FDIV " << getReg(lhs) << ", " << getReg(rhs);
+        break;
+      case llvm::Instruction::SRem:
+        // TODO: % operation
+        UNREACHABLE;
+        break;
+      case llvm::Instruction::Shl:
+        inst << "LSH " << getReg(lhs) << ", " << getReg(rhs);
+        break;
+      case llvm::Instruction::AShr:
+        // shift with saving of the sign
+        // TODO: Does t86 support it?
+        inst << "RSH " << getReg(lhs) << ", " << getReg(rhs);
+        break;
+      case llvm::Instruction::And:
+        inst << "AND " << getReg(lhs) << ", " << getReg(rhs);
+        break;
+      case llvm::Instruction::Or:
+        inst << "OR " << getReg(lhs) << ", " << getReg(rhs);
+        break;
+      case llvm::Instruction::Xor:
+        inst << "XOR " << getReg(lhs) << ", " << getReg(rhs);
+        break;
+      default:
+        llvm::errs() << "Unsupported binary operation: " << binOp << "\n";
+        UNREACHABLE;
+        break;
     }
-    emitInstruction(inst.str());
+
+    emitInstruction(inst);
     // Because target works with 2 registers, but LLVM requires one more to store result,
     // temporary workaround is to put result into new register.
-    inst.str("");
     inst << "MOV " << getReg(&binOp) << ", " << getReg(lhs);
-    emitInstruction(inst.str());
+    emitInstruction(inst);
   }
 
+  // When translating store from function argument, we want to treat it as store from the stack, because
+  // arguments are stored on the stack (calling convention)
   void translateStoreInst(llvm::StoreInst &store) {
     llvm::Value *value = store.getValueOperand();
     llvm::Value *ptr = store.getPointerOperand();
     std::stringstream inst;
-    if (llvm::ConstantInt *constInt = llvm::dyn_cast<llvm::ConstantInt>(value)) {
+
+    if (llvm::Argument* argument = llvm::dyn_cast<llvm::Argument>(value)) {
+      inst << "MOV [" << getReg(ptr) << "], [BP + " << std::to_string(argument->getParent()->arg_size() - argument->getArgNo()) << "]";
+    } else if (llvm::ConstantInt *constInt = llvm::dyn_cast<llvm::ConstantInt>(value)) {
       inst << "MOV " << "[" << getReg(ptr) << "], " << constInt->getZExtValue();
     } else if (llvm::Instruction *loadInst = llvm::dyn_cast<llvm::Instruction>(value)) {
       inst << "MOV " << "[" << getReg(ptr) << "], " << getReg(loadInst);
@@ -187,52 +258,121 @@ private:
       llvm::errs() << "Unsupported store: " << store << "\n";
       UNREACHABLE;
     }
-    emitInstruction(inst.str());
+    emitInstruction(inst);
   }
 
   void translateLoadInst(llvm::LoadInst &load) {
     llvm::Value *ptr = load.getPointerOperand();
     std::stringstream inst;
     inst << "MOV "  << getReg(&load) << ", [" << getReg(ptr) << "]";
-    emitInstruction(inst.str());
+    emitInstruction(inst);
+  }
+
+  void emitJump(std::stringstream & inst, llvm::BasicBlock* bb) {
+    if (bbToAddr.count(bb)) {
+      inst << bbToAddr.at(bb);
+    } else {
+      needToRelocate.emplace_back(instructionCounter, bb);
+    }
+    emitInstruction(inst);
   }
 
   void translateBranchInst(llvm::BranchInst &branch) {
     std::stringstream inst;
+    llvm::BasicBlock* bb = nullptr;
     if (branch.isConditional()) {
-      std::string instruction = "BRANCH_IF " + getReg(branch.getCondition()) + ", targetLabel";
-      emitInstruction(instruction);
-    } else {
-      llvm::BasicBlock* bb = branch.getSuccessor(0);
-      if (bbToAddr.count(bb)) {
-        inst << "JMP " << bbToAddr.at(bb);
-      } else {
-        inst << "JMP ";
-        needToRelocate.emplace_back(instructionCounter, bb);
+      llvm::CmpInst* cmp = llvm::dyn_cast<llvm::CmpInst>(branch.getCondition());
+      llvm::BasicBlock* bb_true = branch.getSuccessor(0);
+      // false case
+      bb = branch.getSuccessor(1);
+      switch (cmp->getPredicate()) {
+        case llvm::CmpInst::FCMP_OEQ:
+          inst << "JE ";
+          break;
+        case llvm::CmpInst::FCMP_OGT:
+          inst << "JG ";
+          break;
+        case llvm::CmpInst::FCMP_OGE:
+          inst << "JGE ";
+          break;
+        case llvm::CmpInst::FCMP_OLT:
+          inst << "JL ";
+          break;
+        case llvm::CmpInst::FCMP_OLE:
+          inst << "JLE ";
+          break;
+        case llvm::CmpInst::FCMP_ONE:
+          inst << "JNE ";
+          break;
+        case llvm::CmpInst::ICMP_EQ:
+          inst << "JE ";
+          break;
+        case llvm::CmpInst::ICMP_NE:
+          inst << "JNE ";
+          break;
+        case llvm::CmpInst::ICMP_SGT:
+          inst << "JG ";
+          break;
+        case llvm::CmpInst::ICMP_SGE:
+          inst << "JGE ";
+          break;
+        case llvm::CmpInst::ICMP_SLT:
+          inst << "JL ";
+          break;
+        case llvm::CmpInst::ICMP_SLE:
+          inst << "JLE ";
+          break;
+        default:
+          UNREACHABLE;
+          break;
       }
-      emitInstruction(inst.str());
+      emitJump(inst, bb_true);
+    } else {
+      bb = branch.getSuccessor(0);
     }
+    // emit false case for conditional and usual jump for unconditional
+    inst << "JMP ";
+    emitJump(inst, bb);
   }
 
   // R0 is return register
   void translateCallInst(llvm::CallInst &call) {
     // TODO: struct ABI
     // temporary: push function arguments onto the stack
-    llvm::Function* function = call.getFunction();
-    for (auto & arg : function->args()) {
-      emitInstruction("PUSH " + getReg(&arg));
+    llvm::Function* function = call.getCalledFunction();
+    std::stringstream inst;
+    // handle intrinsics
+    if (function->getName() == "putint") {
+      emitInstruction("PUTNUM " + getReg(call.getOperand(0)));
+    } else if (function->getName() == "putchar") {
+      inst << "MOV R1, " << getReg(call.getOperand(0));
+      emitInstruction(inst);
+      emitInstruction("PUTCHAR " + getReg(call.getOperand(0)));
+    } else if (function->getName() == "getchar") {
+      emitInstruction("GETCHAR R0");
+    } else {
+      for (auto & arg : call.operands()) {
+        emitInstruction("PUSH " + getReg(arg));
+      }
+      // clear args
+      std::string instruction = "CALL ";
+      needToRelocate.emplace_back(instructionCounter, &function->getEntryBlock());
+      emitInstruction(instruction);
+
+      if (!function->getReturnType()->isVoidTy()) {
+        emitInstruction("MOV " + getReg(&call) + ", R0");
+      }
     }
-    if (!function->getReturnType()->isVoidTy()) {
-      emitInstruction("MOV " + getReg(&call) + "R0");
-    }
-    // clear args
-    std::string instruction = "CALL ";
-    needToRelocate.emplace_back(instructionCounter, &function->getEntryBlock());
-    emitInstruction(instruction);
+
   }
 
   // Emit a translated instruction
-  void emitInstruction(const std::string &instruction) {
+  void emitInstruction(std::stringstream & instruction) {
+    translatedCode.push_back(std::to_string(instructionCounter++) + "\t" + instruction.str());
+    instruction.str("");
+  }
+
+  void emitInstruction(const std::string & instruction) {
     translatedCode.push_back(std::to_string(instructionCounter++) + "\t" + instruction);
   }
 
