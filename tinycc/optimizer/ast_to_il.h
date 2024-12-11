@@ -434,16 +434,16 @@ namespace tiny {
             // The type could be pointer, int or double
             ASSERT(ast->type()->isNumeric() || ast->type()->isPointer());
             llvm::Value * constant = nullptr;
-
-            if (ast->type() == Type::getDouble()) {
-              constant = llvm::ConstantFP::get(getLLVMType(Type::getDouble()), ast->op == Symbol::Inc ? 1.0 : -1.0);
+            if (ast->type()->isNumeric()) {
+              if (ast->type() == Type::getDouble()) {
+                constant = llvm::ConstantFP::get(getLLVMType(Type::getDouble()), ast->op == Symbol::Inc ? 1.0 : -1.0);
+                _last_result = llvm::BinaryOperator::CreateFAdd(load_val, constant, "finc", _bb);
+              } else {
+                constant = llvm::ConstantInt::get(getLLVMType(Type::getInt()), ast->op == Symbol::Inc ? 1 : -1);
+                _last_result = llvm::BinaryOperator::CreateAdd(load_val, constant, "inc", _bb);
+              }
             } else {
               constant = llvm::ConstantInt::get(getLLVMType(Type::getInt()), ast->op == Symbol::Inc ? 1 : -1);
-            }
-
-            if (ast->type()->isNumeric()) {
-              _last_result = llvm::BinaryOperator::CreateAdd(load_val, constant, "inc", _bb);
-            } else {
               _last_result = llvm::GetElementPtrInst::Create(getLLVMType(dynamic_cast<PointerType*>(ast->arg->type())->base()), load_val, constant, "inc_ptr", _bb);
             }
 
@@ -508,7 +508,7 @@ namespace tiny {
 
         llvm::Value* dereference(AST * ast, AST * index = nullptr) {
           ASSERT(ast->type()->isPointer());
-          // Do not propogate current lvalue deeper
+          // Do not propagate current lvalue deeper
           llvm::Value* result = nullptr;
           bool old_lvalue = lValue_;
           lValue_ = false;
@@ -532,7 +532,7 @@ namespace tiny {
             lValue_ = false;
             result = ptr;
           } else {
-            result = new llvm::LoadInst(getLLVMType(ptr_type->base()), _last_result, "*(ptr + index)", _bb);
+            result = new llvm::LoadInst(getLLVMType(ptr_type->base()), ptr, "*(ptr + index)", _bb);
           }
           return result;
         }
@@ -685,25 +685,14 @@ namespace tiny {
         return _last_result;
       }
 
-        struct Context {
-            std::unordered_map<Symbol, Instruction *> locals;
-            BasicBlock * localsBlock = nullptr;
-
-            Context(BasicBlock * locals):
-                localsBlock{locals} {
-            }
-
-        }; // ASTToILTranslator::Context
-
-
-        void leaveFunction() {
-            _environments.pop_back();
-            _func = nullptr;
-            if (_bb->getTerminator() == nullptr) {
-              llvm::ReturnInst::Create(*_context, _bb);
-            }
-            _bb = nullptr;
+      void leaveFunction() {
+        _environments.pop_back();
+        _func = nullptr;
+        if (_bb->getTerminator() == nullptr) {
+          llvm::ReturnInst::Create(*_context, _bb);
         }
+        _bb = nullptr;
+      }
 
         /** Enters new block.
          */

@@ -115,10 +115,29 @@ Test tests[] = {
 //        TEST("int foo (int a, int b) {return a + b; } int main() {return foo( 1, 2 );}"),
 //        TEST("int main(int a, int b, int c) { b = ++a; c = a++;}", 0),
 //        TEST("int main() { int b[10]; }", 0),
-        TEST("int main() { for (int abc = 1; abc < 9; abc++) { printi(abc); } return 0; }", 0),
+//        TEST("int main() { int b = 0; int* c = &b; return c[3]; }", 0),
 //        TEST("int main(int a, int b, int c) {for (; ; ) { a = a - 1; }}", 0),
 //        TEST("int hui; int main(int a, int b, int c) {c = a + b; a = 5 / 2; b = a * 3; return c * a * b * a;}", 0),
-//    TEST("int main() { return 1; }", 1),
+    TEST("\n"
+         "struct Point {\n"
+         "  int a;\n"
+         "  int b;\n"
+         "};\n"
+         "\n"
+         "struct Rectangle {\n"
+         "  Point a;\n"
+         "  Point b;\n"
+         "};\n"
+         "\n"
+         "int main () {\n"
+         "  Rectangle rect;\n"
+         "  rect.a.a = 2;\n"
+         "  rect.b.a = 3;\n"
+         "  rect.b.a = 4;\n"
+         "  rect.b.b = 4;\n"
+         "  printi(rect.b.b);\n"
+         "  return 0;\n"
+         "}", 0),
 //    TEST("int main() { if (1) return 10; else return 2; }", 10),
 //    TEST("int main() { if (0) return 10; else return 2; }", 2),
 //    TEST("int main() { int i = 1; return i; }", 1),
