@@ -568,9 +568,15 @@ namespace tiny {
           // get the pointer the member and load its value
           for (size_t i = 0; i < structType->fieldCount(); i++) {
             if ((*structType)[i].first == member) {
-              result = llvm::GetElementPtrInst::Create(getLLVMType(base->type()), struct_,
-                                                             {llvm::ConstantInt::get(llvm::Type::getInt32Ty(*_context), 0),
-                                                              llvm::ConstantInt::get(llvm::Type::getInt32Ty(*_context), i)}, ".member", _bb);
+              // Do not generate GEP, when reading first member -> it will be exactly the struct address
+              if (i > 0) {
+                result = llvm::GetElementPtrInst::Create(getLLVMType(base->type()), struct_,
+                                                         {llvm::ConstantInt::get(llvm::Type::getInt32Ty(*_context), 0),
+                                                          llvm::ConstantInt::get(llvm::Type::getInt32Ty(*_context), i)}, ".member", _bb);
+              } else {
+                result = struct_;
+              }
+
               assert(result != nullptr);
               if (lValue_) {
                 lValue_ = false;

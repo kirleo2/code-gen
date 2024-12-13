@@ -11,85 +11,13 @@
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/BasicBlock.h>
 #include "llvm/IR/Constants.h"
+#include "backend/instructions.hpp"
 #include <map>
 #include <vector>
 #include "optimizer/il.h"
 #include <string>
 #include <cmath>
 #include <type_traits>
-
-typedef size_t Register;
-
-class Operand {
-
-public:
-  template <typename T, typename = typename std::enable_if<std::is_integral<T>::value>::type>
-  Operand (T i): op(std::to_string(i)), isMemoryAccess(false) {}
-  Operand(const std::string & op): op(op), isMemoryAccess(false) {}
-  Operand(const std::string & op, bool isMemoryAccess): op(op), isMemoryAccess(isMemoryAccess) {}
-
-  Operand & setMemoryAccess() {
-    isMemoryAccess = true;
-    return *this;
-  }
-
-  const std::string & getOperand() const {
-    if (isMemoryAccess) {
-      return "[" + op + "]";
-    }
-    return op;
-  }
-
-  friend std::ostream& operator<<(std::ostream& os, const Operand & op) {
-    if (op.isMemoryAccess) {
-      os << "[" << op.op << "]";
-    } else {
-      os << op.op;
-    }
-    return os;
-  }
-
-private:
-  std::string op;
-  bool isMemoryAccess;
-};
-
-class Instruction {
-public:
-  Instruction() {}
-  Instruction(const std::string & inst): instruction(inst) {}
-  Instruction(const std::string & inst, const Operand & op1): instruction(inst), op1(op1) {}
-  Instruction(const std::string & inst, const Operand & op1, const Operand & op2): instruction(inst), op1(op1), op2(op2) {}
-
-  void setInstruction(const std::string & inst) {
-    instruction = inst;
-  }
-
-  void setOp1(const Operand & op) {
-    op1 = op;
-  }
-
-  void setOp2(const Operand & op) {
-    op2 = op;
-  }
-
-  friend std::ostream& operator<<(std::ostream& os, const Instruction& inst) {
-    os << inst.instruction;
-    if (inst.op1.has_value()) {
-      os << " " << inst.op1.value();
-    }
-    if (inst.op2.has_value()) {
-      assert(inst.op1.has_value());
-      os << ", " << inst.op2.value();
-    }
-    return os;
-  }
-
-private:
-  std::string instruction;
-  std::optional<Operand> op1;
-  std::optional<Operand> op2;
-};
 
 using namespace tiny;
 
@@ -105,7 +33,7 @@ class TargetTranslator {
   std::unordered_map<llvm::Value*, size_t> registers;
   std::unordered_map<llvm::AllocaInst*, size_t> allocaOffsets;
   std::unordered_map<llvm::Function*, size_t> epilogueOffsets;
-  std::vector<std::pair<size_t, llvm::BasicBlock*>> needToRelocate;
+  std::vector<std::pair<Register, llvm::BasicBlock*>> needToRelocate;
 
 public:
   TargetTranslator(Program & program) : program(program) {
@@ -118,8 +46,8 @@ public:
   // Translate the provided LLVM IR to t86 instructions
   bool translateToTarget(const std::string &outputFile) {
     // Iterate through functions and translate each function
-    emitInstruction("CALL", 2);
-    emitInstruction("HALT");
+    emitInstruction(CALL, Operand(NOREG, MAIN));
+    emitInstruction(HALT);
     for (llvm::Function &F : *program.module) {
       if (F.isDeclaration()) continue; // Skip external functions
       size_t stackSize = calculateStackSize(F);
@@ -139,7 +67,7 @@ public:
       currentEpilogue++;
 
       // divide functions
-      emitInstruction("NOP");
+      emitInstruction(NOP);
     }
     patchJumps();
     // Emit the generated machine code to a file (custom format)
@@ -153,7 +81,7 @@ private:
   void patchJumps() {
     for (auto & inst : needToRelocate) {
       assert(bbToAddr.count(inst.second));
-      translatedCode[inst.first].setOp1(bbToAddr[inst.second]);
+      translatedCode[inst.first].setOp1(Operand(NOREG, (int64_t)bbToAddr[inst.second]));
     }
   }
 
@@ -178,15 +106,15 @@ private:
   }
 
   void insertPrologue(size_t stackSize) {
-    emitInstruction(Instruction("PUSH", Operand("BP")));
-    emitInstruction(Instruction("MOV", Operand("BP"), Operand("SP")));
-    emitInstruction(Instruction("SUB", Operand("SP"), Operand(stackSize)));
+    emitInstruction(PUSH, BP);
+    emitInstruction(MOV, BP, SP);
+    emitInstruction(SUB, SP, Operand(NOREG, (int64_t)stackSize));
   }
 
   void insertEpilogue() {
-    emitInstruction(Instruction("MOV", Operand("SP"), Operand("BP")));
-    emitInstruction(Instruction("POP", Operand("BP")));
-    emitInstruction(Instruction("RET"));
+    emitInstruction(MOV, SP, BP);
+    emitInstruction(POP, BP);
+    emitInstruction(RET);
   }
 
   // Main function to handle translation of LLVM IR to t86 instructions
@@ -234,25 +162,20 @@ private:
         type = elementType;
       }
     }
+    assert(offset > 0);
 
-    if (offset == 0)  {
-      emitInstruction("MOV", getReg(&gepInst), getReg(ptr));
-    } else {
-      std::string op2 = getReg(ptr);
-      op2 += " + " + std::to_string(offset);
-      emitInstruction("LEA", getReg(&gepInst), Operand(op2).setMemoryAccess());
-    }
+    emitInstruction(LEA, getOperand(&gepInst), getOperand(ptr).setOffset((int64_t)offset).setMemoryAccess());
   }
 
   void translateCmpInst(llvm::CmpInst & cmpInst) {
     std::string inst;
     if (cmpInst.isIntPredicate()) {
-      inst = "CMP";
+      inst = CMP;
     } else {
       assert(cmpInst.isFPPredicate());
-      inst = "FCMP";
+      inst = FCMP;
     }
-    emitInstruction(inst, getReg(cmpInst.getOperand(0)), getReg(cmpInst.getOperand(1)));
+    emitInstruction(inst, getOperand(cmpInst.getOperand(0)), getOperand(cmpInst.getOperand(1)));
   }
 
   void translateReturn (llvm::ReturnInst & retInst) {
@@ -264,82 +187,78 @@ private:
       UNREACHABLE;
     }
     if (!retVal->getType()->isVoidTy()) {
-      emitInstruction("MOV R0, " + getReg(retVal));
+      emitInstruction(MOV, R0, getOperand(retVal));
     }
     needToRelocate.emplace_back(instructionCounter, EPILOGUE);
-    emitInstruction("JMP");
+    emitInstruction(JMP);
   }
 
   void translateAlloca(llvm::AllocaInst & alloca) {
     assert(allocaOffsets.count(&alloca));
-    Operand op1 (getReg(&alloca));
-    Operand op2 ("BP - " + std::to_string(allocaOffsets[&alloca]));
-    op2.setMemoryAccess();
-    emitInstruction("MOV", op1, op2);
+    int64_t offset = -(int64_t)allocaOffsets[&alloca];
+    emitInstruction(MOV, getOperand(&alloca), Operand(BP, offset).setMemoryAccess());
   }
 
   // Map a binary operator to corresponding t86 instruction
   void translateBinaryOperator(llvm::BinaryOperator &binOp) {
     llvm::Value *lhs = binOp.getOperand(0);
     llvm::Value *rhs = binOp.getOperand(1);
-    Operand op1 = getReg(lhs);
-    Operand op2 = getReg(rhs);
     std::string inst;
     switch (binOp.getOpcode()) {
       case llvm::Instruction::Add:
-        inst = "ADD";
+        inst = ADD;
         break;
       case llvm::Instruction::FAdd:
-        inst = "FADD";
+        inst = FADD;
         break;
       case llvm::Instruction::Sub:
-        inst = "SUB";
+        inst = SUB;
         break;
       case llvm::Instruction::FSub:
-        inst = "FSUB";
+        inst = FSUB;
         break;
       case llvm::Instruction::Mul:
-        inst = "IMUL";
+        inst = IMUL;
         break;
       case llvm::Instruction::FMul:
-        inst = "FMUL";
+        inst = FMUL;
         break;
       case llvm::Instruction::SDiv:
-        inst = "IDIV";
+        inst = IDIV;
         break;
       case llvm::Instruction::FDiv:
-        inst = "FDIV";
+        inst = FDIV;
         break;
       case llvm::Instruction::SRem:
         // TODO: % operation
         UNREACHABLE;
         break;
       case llvm::Instruction::Shl:
-        inst = "LSH";
+        inst = LSH;
         break;
       case llvm::Instruction::AShr:
         // shift with saving of the sign
         // TODO: Does t86 support it?
-        inst = "RSH";
+        inst = RSH;
         break;
       case llvm::Instruction::And:
-        inst = "AND";
+        inst = AND;
         break;
       case llvm::Instruction::Or:
-        inst = "OR";
+        inst = OR;
         break;
       case llvm::Instruction::Xor:
-        inst = "XOR";
+        inst = XOR;
         break;
       default:
         llvm::errs() << "Unsupported binary operation: " << binOp << "\n";
         UNREACHABLE;
         break;
     }
-    emitInstruction(inst, op1, op2);
+    emitInstruction(inst, getOperand(lhs), getOperand(rhs));
     // Because target works with 2 registers, but LLVM requires one more to store result,
     // temporary workaround is to put result into new register.
-    emitInstruction("MOV", getReg(&binOp), getReg(lhs));
+    emitInstruction(MOV, getOperand(&binOp), getOperand(lhs));
   }
 
   // When translating store from function argument, we want to treat it as store from the stack, because
@@ -348,17 +267,17 @@ private:
     llvm::Value *value = store.getValueOperand();
     llvm::Value *ptr = store.getPointerOperand();
     std::stringstream inst;
-    Operand op1 (getReg(ptr));
+    Operand op1 (getOperand(ptr));
     op1.setMemoryAccess();
     if (llvm::Argument* argument = llvm::dyn_cast<llvm::Argument>(value)) {
-      Operand op2 ("BP + " + std::to_string(argument->getParent()->arg_size() - argument->getArgNo()), true);
-      emitInstruction(Instruction("MOV", op1, op2));
+      Operand op2 = (BP, (int64_t)(argument->getParent()->arg_size() - argument->getArgNo()));
+      emitInstruction(MOV, op1, op2.setMemoryAccess());
     } else if (llvm::ConstantInt *constInt = llvm::dyn_cast<llvm::ConstantInt>(value)) {
-      emitInstruction(Instruction("MOV", op1, Operand(constInt->getZExtValue())));
+      emitInstruction(Instruction(MOV, op1, Operand(NOREG, constInt->getSExtValue())));
     } else if (llvm::LoadInst *loadInst = llvm::dyn_cast<llvm::LoadInst>(value)) {
-      emitInstruction(Instruction("MOV", op1, getReg(loadInst)));
+      emitInstruction(Instruction(MOV, op1, getOperand(loadInst)));
     } else if (llvm::AllocaInst *allocaInst = llvm::dyn_cast<llvm::AllocaInst>(value)) {
-      emitInstruction("MOV", op1, Operand(getReg(allocaInst)).setMemoryAccess());
+      emitInstruction(MOV, op1, getOperand(allocaInst).setMemoryAccess());
     } else {
       llvm::errs() << "Unsupported store: " << store << "\n";
       UNREACHABLE;
@@ -367,13 +286,13 @@ private:
 
   void translateLoadInst(llvm::LoadInst &load) {
     llvm::Value *ptr = load.getPointerOperand();
-    emitInstruction(Instruction("MOV", Operand(getReg(&load)), Operand(getReg(ptr)).setMemoryAccess()));
+    emitInstruction(Instruction("MOV", Operand(getOperand(&load)), Operand(getOperand(ptr)).setMemoryAccess()));
   }
 
   void emitJump(const std::string & inst, llvm::BasicBlock* bb) {
     Instruction instruction(inst);
     if (bbToAddr.count(bb)) {
-      instruction.setOp1(std::to_string(bbToAddr[bb]));
+      instruction.setOp1(Operand(NOREG, (int64_t) bbToAddr[bb]));
     } else {
       needToRelocate.emplace_back(instructionCounter, bb);
     }
@@ -390,40 +309,40 @@ private:
       bb = branch.getSuccessor(1);
       switch (cmp->getPredicate()) {
         case llvm::CmpInst::FCMP_OEQ:
-          inst = "JE";
+          inst = JE;
           break;
         case llvm::CmpInst::FCMP_OGT:
-          inst = "JG";
+          inst = JG;
           break;
         case llvm::CmpInst::FCMP_OGE:
-          inst = "JGE";
+          inst = JGE;
           break;
         case llvm::CmpInst::FCMP_OLT:
-          inst = "JL";
+          inst = JL;
           break;
         case llvm::CmpInst::FCMP_OLE:
-          inst = "JLE";
+          inst = JLE;
           break;
         case llvm::CmpInst::FCMP_ONE:
-          inst = "JNE";
+          inst = JNE;
           break;
         case llvm::CmpInst::ICMP_EQ:
-          inst = "JE";
+          inst = JE;
           break;
         case llvm::CmpInst::ICMP_NE:
-          inst = "JNE";
+          inst = JNE;
           break;
         case llvm::CmpInst::ICMP_SGT:
-          inst = "JG";
+          inst = JG;
           break;
         case llvm::CmpInst::ICMP_SGE:
-          inst = "JGE";
+          inst = JGE;
           break;
         case llvm::CmpInst::ICMP_SLT:
-          inst = "JL";
+          inst = JL;
           break;
         case llvm::CmpInst::ICMP_SLE:
-          inst = "JLE";
+          inst = JLE;
           break;
         default:
           UNREACHABLE;
@@ -434,7 +353,7 @@ private:
       bb = branch.getSuccessor(0);
     }
     // emit false case for conditional and usual jump for unconditional
-    inst = "JMP";
+    inst = JMP;
     emitJump(inst, bb);
   }
 
@@ -446,32 +365,26 @@ private:
 
     // handle intrinsics
     if (function->getName() == "putint") {
-      emitInstruction(Instruction("PUTNUM", getReg(call.getOperand(0))));
+      emitInstruction(Instruction(PUTNUM, getOperand(call.getOperand(0))));
     } else if (function->getName() == "putchar") {
-      emitInstruction(Instruction("MOV", Operand("R1"), getReg(call.getOperand(0))));
-      emitInstruction(Instruction("PUTCHAR", getReg(call.getOperand(0))));
+      emitInstruction(Instruction(MOV, R1, getOperand(call.getOperand(0))));
+      emitInstruction(Instruction(PUTCHAR, getOperand(call.getOperand(0))));
     } else if (function->getName() == "getchar") {
-      emitInstruction(Instruction("GETCHAR", Operand("R0")));
+      emitInstruction(Instruction(GETCHAR, R0));
     } else {
       for (auto & arg : call.operands()) {
-        emitInstruction(Instruction("PUSH", getReg(arg)));
+        emitInstruction(Instruction(PUSH, getOperand(arg)));
       }
       // clear args
       needToRelocate.emplace_back(instructionCounter, &function->getEntryBlock());
-      emitInstruction(Instruction("CALL"));
+      emitInstruction(CALL);
 
       if (!function->getReturnType()->isVoidTy()) {
-        emitInstruction(Instruction("MOV", getReg(&call), Operand("R0")));
+        emitInstruction(MOV, getOperand(&call), R0);
       }
     }
 
   }
-
-//  // Emit a translated instruction
-//  void emitInstruction(std::stringstream & instruction) {
-//    translatedCode.push_back(std::to_string(instructionCounter++) + "\t" + instruction.str());
-//    instruction.str("");
-//  }
 
   template <typename... Ts>
   void emitInstruction(Ts&&... args) {
@@ -479,24 +392,20 @@ private:
     translatedCode.emplace_back(std::forward<Ts>(args)...);
   }
 
-  void emitInstruction(const Instruction & inst) {
-    instructionCounter++;
-    translatedCode.push_back(inst);
-  }
-
   // TODO: Mapping for constraint number of registers
   // Custom method for mapping LLVM values to registers in t86
-  std::string getReg(llvm::Value *v) {
+  Operand getOperand(llvm::Value *v) {
     // TODO: distinguish float and int registers
    if (llvm::ConstantInt *constInt = llvm::dyn_cast<llvm::ConstantInt>(v)) {
       // e.g. ADD R2, 3 and we want to get register for immediate 3
-      return std::to_string(constInt->getSExtValue());
+      return Operand(NOREG, constInt->getSExtValue());
     }
 
     if (registers.count(v) == 0) {
-      registers[v] = registers.size() + 1;
+      registers[v] = registers.size() + R1 + 1;
     }
-    return "R" + std::to_string(registers[v]);  // Simple register mapping
+
+    return Operand(registers[v]);  // Simple register mapping
   }
 
   // Emit the translated code to the specified output file

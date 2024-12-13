@@ -18,7 +18,8 @@ separate_arguments(LLVM_DEFINITIONS_LIST NATIVE_COMMAND ${LLVM_DEFINITIONS})
 add_definitions(${LLVM_DEFINITIONS_LIST})
 
 file(GLOB_RECURSE SRC "tinycc/*.cpp" "tinycc/*.h")
-add_executable(tinycc ${SRC})
+add_executable(tinycc ${SRC}
+        tinycc/backend/instructions.hpp)
 
 # Link LLVM libraries to the target
 llvm_map_components_to_libnames(LLVM_LIBS support core irreader)
