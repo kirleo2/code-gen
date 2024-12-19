@@ -19,10 +19,12 @@
 #include <cmath>
 #include <type_traits>
 
+
 using namespace tiny;
 
 // Macro to apply synthetic BasicBlock, represented by invalid pointer
 #define EPILOGUE (llvm::BasicBlock*) (currentEpilogue)
+#define PROLOGUE_SIZE 3
 
 class TargetTranslator {
   size_t instructionCounter;                      // Counter for instruction addresses
@@ -33,25 +35,26 @@ class TargetTranslator {
   std::unordered_map<llvm::Value*, size_t> registers;
   std::unordered_map<llvm::AllocaInst*, size_t> allocaOffsets;
   std::unordered_map<llvm::Function*, size_t> epilogueOffsets;
-  std::vector<std::pair<Register, llvm::BasicBlock*>> needToRelocate;
+  std::vector<std::pair<size_t, llvm::BasicBlock*>> needToRelocate;
 
 public:
   TargetTranslator(Program & program) : program(program) {
     currentEpilogue = 0;
-    // Initialize necessary components (e.g., registers, target settings)
     instructionCounter = 0;
   }
 
   // Firstly assign to each BB its address in assembly file then
   // Translate the provided LLVM IR to t86 instructions
   bool translateToTarget(const std::string &outputFile) {
-    // Iterate through functions and translate each function
-    emitInstruction(CALL, Operand(NOREG, MAIN));
+    // emit call to the main
+    needToRelocate.emplace_back(instructionCounter, &program.main->getEntryBlock());
+    emitInstruction(CALL);
+
     emitInstruction(HALT);
     for (llvm::Function &F : *program.module) {
       if (F.isDeclaration()) continue; // Skip external functions
+      // registers.clear();
       size_t stackSize = calculateStackSize(F);
-      // insert prolog
       insertPrologue(stackSize);
       // Process each basic block within the function
       for (llvm::BasicBlock &BB : F) {
@@ -62,11 +65,10 @@ public:
       }
       assert(!bbToAddr.count(EPILOGUE));
       bbToAddr[EPILOGUE] = instructionCounter;
-      // insert epilogue
       insertEpilogue();
       currentEpilogue++;
 
-      // divide functions
+      // divide functions with NOP
       emitInstruction(NOP);
     }
     patchJumps();
@@ -81,7 +83,12 @@ private:
   void patchJumps() {
     for (auto & inst : needToRelocate) {
       assert(bbToAddr.count(inst.second));
-      translatedCode[inst.first].setOp1(Operand(NOREG, (int64_t)bbToAddr[inst.second]));
+      int64_t offset = (int64_t)bbToAddr[inst.second];
+      if (translatedCode[inst.first].getInstruction() == CALL) {
+        offset -= PROLOGUE_SIZE;
+      }
+      assert(offset != 0);
+      translatedCode[inst.first].setOp1(Operand(NOREG, offset));
     }
   }
 
@@ -182,11 +189,11 @@ private:
     // R0 will be return register
     // TODO: Struct ABI
     llvm::Value* retVal = retInst.getReturnValue();
-    if (retVal->getType()->isStructTy()) {
-      llvm::errs() << "Structs are not supported!" << "\n";
-      UNREACHABLE;
-    }
-    if (!retVal->getType()->isVoidTy()) {
+    if (retVal != NULL) {
+      if (retVal->getType()->isStructTy()) {
+        llvm::errs() << "Structs are not supported!" << "\n";
+        UNREACHABLE;
+      }
       emitInstruction(MOV, R0, getOperand(retVal));
     }
     needToRelocate.emplace_back(instructionCounter, EPILOGUE);
@@ -196,13 +203,22 @@ private:
   void translateAlloca(llvm::AllocaInst & alloca) {
     assert(allocaOffsets.count(&alloca));
     int64_t offset = -(int64_t)allocaOffsets[&alloca];
-    emitInstruction(MOV, getOperand(&alloca), Operand(BP, offset).setMemoryAccess());
+    emitInstruction(LEA, getOperand(&alloca), Operand(BP, offset).setMemoryAccess());
   }
 
   // Map a binary operator to corresponding t86 instruction
   void translateBinaryOperator(llvm::BinaryOperator &binOp) {
     llvm::Value *lhs = binOp.getOperand(0);
     llvm::Value *rhs = binOp.getOperand(1);
+
+    Operand lhs_op = getOperand(lhs);
+    Operand rhs_op = getOperand(rhs);
+    // if LHS is not a register, but a constant, we have to emit instruction for temporary register
+    if (llvm::isa<llvm::Constant>(lhs)) {
+      emitInstruction(MOV, R1, lhs_op);
+      lhs_op = Operand(R1);
+    }
+
     std::string inst;
     switch (binOp.getOpcode()) {
       case llvm::Instruction::Add:
@@ -229,10 +245,21 @@ private:
       case llvm::Instruction::FDiv:
         inst = FDIV;
         break;
-      case llvm::Instruction::SRem:
-        // TODO: % operation
-        UNREACHABLE;
-        break;
+      case llvm::Instruction::SRem: {
+        // % operation needs special treatment
+        Operand dividend = lhs_op;
+        Operand divisor = rhs_op;
+
+        // save dividend into temporary register
+        emitInstruction(MOV, R1, dividend);
+        // apply division
+        emitInstruction(IDIV, dividend, divisor);
+        // dividend is now quotient
+        emitInstruction(IMUL, dividend, divisor);
+        emitInstruction(SUB, R1, dividend);
+        emitInstruction(MOV, getOperand(&binOp), R1);
+        return;
+      }
       case llvm::Instruction::Shl:
         inst = LSH;
         break;
@@ -255,10 +282,10 @@ private:
         UNREACHABLE;
         break;
     }
-    emitInstruction(inst, getOperand(lhs), getOperand(rhs));
+    emitInstruction(inst, lhs_op, rhs_op);
     // Because target works with 2 registers, but LLVM requires one more to store result,
     // temporary workaround is to put result into new register.
-    emitInstruction(MOV, getOperand(&binOp), getOperand(lhs));
+    emitInstruction(MOV, getOperand(&binOp), lhs_op);
   }
 
   // When translating store from function argument, we want to treat it as store from the stack, because
@@ -269,18 +296,19 @@ private:
     std::stringstream inst;
     Operand op1 (getOperand(ptr));
     op1.setMemoryAccess();
+    // MOV [], [] is not supported, so if we need to access memory of the second operand,
+    // we want to fetch it to the temporary register (R1)
     if (llvm::Argument* argument = llvm::dyn_cast<llvm::Argument>(value)) {
-      Operand op2 = (BP, (int64_t)(argument->getParent()->arg_size() - argument->getArgNo()));
-      emitInstruction(MOV, op1, op2.setMemoryAccess());
+      Operand op2 (BP, (int64_t)(argument->getParent()->arg_size() - argument->getArgNo() + 1));
+      emitInstruction(MOV, R1, op2.setMemoryAccess());
+      emitInstruction(MOV, op1, R1);
     } else if (llvm::ConstantInt *constInt = llvm::dyn_cast<llvm::ConstantInt>(value)) {
       emitInstruction(Instruction(MOV, op1, Operand(NOREG, constInt->getSExtValue())));
-    } else if (llvm::LoadInst *loadInst = llvm::dyn_cast<llvm::LoadInst>(value)) {
-      emitInstruction(Instruction(MOV, op1, getOperand(loadInst)));
     } else if (llvm::AllocaInst *allocaInst = llvm::dyn_cast<llvm::AllocaInst>(value)) {
-      emitInstruction(MOV, op1, getOperand(allocaInst).setMemoryAccess());
+      emitInstruction(MOV, R1, getOperand(allocaInst).setMemoryAccess());
+      emitInstruction(MOV, op1, R1);
     } else {
-      llvm::errs() << "Unsupported store: " << store << "\n";
-      UNREACHABLE;
+      emitInstruction(Instruction(MOV, op1, getOperand(value)));
     }
   }
 
@@ -296,7 +324,7 @@ private:
     } else {
       needToRelocate.emplace_back(instructionCounter, bb);
     }
-    emitInstruction(inst);
+    emitInstruction(instruction);
   }
 
   void translateBranchInst(llvm::BranchInst &branch) {
@@ -353,6 +381,7 @@ private:
       bb = branch.getSuccessor(0);
     }
     // emit false case for conditional and usual jump for unconditional
+    assert(bb != nullptr);
     inst = JMP;
     emitJump(inst, bb);
   }
@@ -370,9 +399,9 @@ private:
       emitInstruction(Instruction(MOV, R1, getOperand(call.getOperand(0))));
       emitInstruction(Instruction(PUTCHAR, getOperand(call.getOperand(0))));
     } else if (function->getName() == "getchar") {
-      emitInstruction(Instruction(GETCHAR, R0));
+      emitInstruction(Instruction(GETCHAR,  getOperand(&call)));
     } else {
-      for (auto & arg : call.operands()) {
+      for (auto & arg : call.args()) {
         emitInstruction(Instruction(PUSH, getOperand(arg)));
       }
       // clear args
@@ -383,7 +412,6 @@ private:
         emitInstruction(MOV, getOperand(&call), R0);
       }
     }
-
   }
 
   template <typename... Ts>

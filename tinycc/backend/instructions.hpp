@@ -2,6 +2,9 @@
 #ifndef TINYCC_INSTRUCTIONS_HPP
 #define TINYCC_INSTRUCTIONS_HPP
 
+#include <iostream>
+
+
 #define MOV "MOV"
 #define LEA "LEA"
 
@@ -73,8 +76,6 @@
 #define FLAGS 4
 #define R0 5
 #define R1 6
-
-#define MAIN 2
 
 typedef size_t Register;
 class Operand {
@@ -165,6 +166,7 @@ public:
 
   friend std::ostream& operator<<(std::ostream& os, const Instruction& inst) {
     os << inst.instruction;
+//    if (inst.instruction == "JMP") assert(inst.op1.has_value());
     if (inst.op1.has_value()) {
       os << " " << inst.op1.value();
     }
@@ -173,6 +175,10 @@ public:
       os << ", " << inst.op2.value();
     }
     return os;
+  }
+
+  const std::string & getInstruction() const{
+    return instruction;
   }
 
 private:

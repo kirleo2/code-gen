@@ -115,29 +115,70 @@ Test tests[] = {
 //        TEST("int foo (int a, int b) {return a + b; } int main() {return foo( 1, 2 );}"),
 //        TEST("int main(int a, int b, int c) { b = ++a; c = a++;}", 0),
 //        TEST("int main() { int b[10]; }", 0),
-//        TEST("int main() { int b = 0; int* c = &b; return c[3]; }", 0),
+//        TEST("void increment(int * x) {"
+//             "*x = *x + 1;}"
+//             "int main() { int x = 0; while(x < 100) {increment(&x); printi(-x);} "
+//             "return 0; }", 0),
 //        TEST("int main(int a, int b, int c) {for (; ; ) { a = a - 1; }}", 0),
-//        TEST("int hui; int main(int a, int b, int c) {c = a + b; a = 5 / 2; b = a * 3; return c * a * b * a;}", 0),
-    TEST("\n"
-         "struct Point {\n"
-         "  int a;\n"
-         "  int b;\n"
-         "};\n"
-         "\n"
-         "struct Rectangle {\n"
-         "  Point a;\n"
-         "  Point b;\n"
-         "};\n"
-         "\n"
-         "int main () {\n"
-         "  Rectangle rect;\n"
-         "  rect.a.a = 2;\n"
-         "  rect.b.a = 3;\n"
-         "  rect.b.a = 4;\n"
-         "  rect.b.b = 4;\n"
-         "  printi(rect.b.b);\n"
-         "  return 0;\n"
-         "}", 0),
+        TEST("int mod_exp(int base, int exponent, int mod) {\n"
+             "int result = 1;\n"
+             "  base = base % mod;  // Handle base greater than mod\n"
+             "  while (exponent > 0) {\n"
+             "    if (exponent % 2 == 1) {\n"
+             "      result = result * base;\n"
+             "      result = result % mod;\n"
+             "    }\n"
+             "    base = base * base;\n"
+             "    base = base % mod;"
+             "    exponent =  exponent / 2;\n"
+             "  }\n"
+             "  return result;\n"
+             "}\n"
+             "\n"
+             "int order_of_element(int a, int x) {\n"
+             "  for (int n = 1; n < x; n++) {\n"
+             "    if (mod_exp(a, n, x) == 1) {\n"
+             "      return n;  // Return the smallest n such that a^n ≡ 1 (mod x)\n"
+             "    }\n"
+             "  }\n"
+             "  return -1;  // If no such n exists\n"
+             "}\n"
+             "\n"
+             "int main() {\n"
+             "char a_ = scan();\n"
+             "char x_ = scan();\n"
+             "int a = a_; int x = x_;"
+             "//  printf(\"Enter the element a: \");\n"
+             "//  scanf(\"%d\", &a);\n"
+             "//  printf(\"Enter the modulus x: \");\n"
+             "//  scanf(\"%d\", &x);\n"
+             "\n"
+             "  int order = order_of_element(a, x);\n"
+             "printi(order);"
+             "\n"
+             "\n"
+             "  return 0;\n"
+             "}", 0),
+//    TEST("\n"
+//         "struct Point {\n"
+//         "  int a;\n"
+//         "  int b;\n"
+//         "};\n"
+//         "\n"
+//         "struct Rectangle {\n"
+//         "  Point a;\n"
+//         "  Point b;\n"
+//         "};\n"
+//         "\n"
+//         "int main () {\n"
+//         "  Rectangle rect;\n"
+//         "  rect.a.a = 2;\n"
+//         "  rect.b.a = 3;\n"
+//         "  rect.b.a = 4;\n"
+//         "  rect.b.b = 4;\n"
+//         "  printi(rect.b.b);\n"
+//         "  return 0;\n"
+//         "}", 0),
 //    TEST("int main() { if (1) return 10; else return 2; }", 10),
 //    TEST("int main() { if (0) return 10; else return 2; }", 2),
 //    TEST("int main() { int i = 1; return i; }", 1),
@@ -293,6 +334,7 @@ bool compile(std::string const & contents, Test const * test) {
         Typechecker::checkProgram(ast);
         // translate to IR
         Program p = ASTToILTranslator::translateProgram(ast);
+        assert(p.main != nullptr);
 //        if (Options::verboseIL)
 //            std::cout << ColorPrinter::colorize(p) << std::endl;
 //        if (test && test->testResult && Options::testIR) {

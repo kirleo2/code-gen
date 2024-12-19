@@ -164,6 +164,10 @@ namespace tiny {
         void visit(ASTFunDecl* ast) override {
           auto functionType = llvm::cast<llvm::FunctionType>(getLLVMType(ast->type()));
           _func = llvm::Function::Create(functionType, llvm::Function::ExternalLinkage, ast->name.name(), *_module);
+          // save main entry point
+          if (ast->name.name() == "main") {
+            program.main = _func;
+          }
           _func->setCallingConv(llvm::CallingConv::C);
           pushLocal(ast->name, _func, ast->type());
           _bb = llvm::BasicBlock::Create(*_context, "prolog", _func);
@@ -221,11 +225,13 @@ namespace tiny {
           auto old_continue = _continue_target;
 
           llvm::BranchInst::Create(cond, _bb);
+          _bb = cond;
           auto cmp = translate(ast->cond);
-          llvm::BranchInst::Create(loop_body, loop_exit, cmp, _bb);
 
+          llvm::BranchInst::Create(loop_body, loop_exit, cmp, _bb);
           _bb = loop_body;
           translate(ast->body);
+          llvm::BranchInst::Create(cond, _bb);
 
           _bb = loop_exit;
           // restore break and continue targets
@@ -426,11 +432,20 @@ namespace tiny {
         void visit(ASTUnaryOp* ast) override {
           // fetch the var address, load the value, then apply Op and return after application
           llvm::Value* val = translateLValue(ast->arg);
-          llvm::Value* load_val = new llvm::LoadInst(getLLVMType(ast->arg->type()), val, val->getName(), _bb);
+          llvm::Value* load_val = nullptr;
+          // load value only from pointer
+          if (val->getType()->isPointerTy()) {
+            load_val = new llvm::LoadInst(getLLVMType(ast->arg->type()), val, val->getName(), _bb);
+          } else {
+            load_val = val;
+          }
+
           // implicit cast if necessary
           load_val = createCast(load_val, getLLVMType(ast->type()));
 
           if (ast->op == Symbol::Inc || ast->op == Symbol::Dec) {
+
+            ASSERT(val->getType()->isPointerTy());
             // The type could be pointer, int or double
             ASSERT(ast->type()->isNumeric() || ast->type()->isPointer());
             llvm::Value * constant = nullptr;
@@ -455,11 +470,12 @@ namespace tiny {
             // for double -> FNEG
             // for int 0 -> value
             if (ast->type() == Type::getDouble()) {
-              _last_result = llvm::UnaryOperator::CreateFNeg(load_val, "fneg", _bb);
+              llvm::Value *zero = llvm::ConstantFP::get(llvm::Type::getInt32Ty(*_context), 0);
+              _last_result = llvm::BinaryOperator::CreateFSub(zero, load_val, "fneg_unary_op", _bb);
             } else {
               ASSERT(ast->type() == Type::getInt());
               llvm::Value *zero = llvm::ConstantInt::get(llvm::Type::getInt32Ty(*_context), 0);
-              _last_result = llvm::BinaryOperator::CreateSub(zero, val, "neg", _bb);
+              _last_result = llvm::BinaryOperator::CreateSub(zero, load_val, "neg_unary_op", _bb);
             }
           }
         }

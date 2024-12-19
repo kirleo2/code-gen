@@ -13,6 +13,7 @@ namespace tiny {
   struct Program {
     std::shared_ptr<llvm::LLVMContext> ctx;
     std::shared_ptr<llvm::Module> module;
+    llvm::Function* main = nullptr;
   };
 } // namespace tiny
 

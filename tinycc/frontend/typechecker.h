@@ -126,7 +126,8 @@ namespace tiny {
             if (ast->value != nullptr) {
                 Type * valueType = typecheck(ast->value);
                 // TODO: Why now implicit conversion?
-                if (valueType != t)
+
+                if (!valueType->convertsImplicitlyTo(t))
                     throw TypeError{STR("Value of type " << *valueType << " cannot be assigned to variable of type " << *t), ast->location()};
             }
             addVariable(ast->name->name, t, ast);
