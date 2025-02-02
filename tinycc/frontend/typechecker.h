@@ -232,6 +232,7 @@ namespace tiny {
         }
 
         void visit(ASTFor * ast) override {
+          enterBlock();
           if (ast->init) typecheck(ast->init);
           if (ast->cond) {
             auto cond = typecheck(ast->cond);
@@ -241,6 +242,7 @@ namespace tiny {
           if (ast->increment) typecheck(ast->increment);
           typecheck(ast->body);
           ast->setType(Type::getVoid());
+          leaveBlock();
          }
 
         /** No typechecking here */

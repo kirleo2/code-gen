@@ -85,8 +85,11 @@ namespace tiny {
          */
         void visit(ASTString* ast) override {
           auto str = llvm::ConstantDataArray::getString(*_context, ast->value, true);
-          _last_result = new llvm::GlobalVariable(*_module, getLLVMType(ast->type()), true, llvm::GlobalValue::ExternalLinkage,
-                                                  str, "string");
+          llvm::Type * type = llvm::ArrayType::get(getLLVMType(Type::getChar()), ast->value.size() + 1);
+          llvm::Value * globalVar = new llvm::GlobalVariable(*_module, type, true,
+                                                             llvm::GlobalValue::PrivateLinkage, str, "string");
+
+          _last_result = llvm::GetElementPtrInst::Create(type, globalVar, {getIntegerConstant(0)}, "string_ptr", _bb);
         }
 
         /** Identifier is translated as a variable read. Note that this is as the address. 
@@ -126,6 +129,14 @@ namespace tiny {
             for (auto & i : ast->body) 
                 visitChild(i.get());
             leaveBlock();
+        }
+
+        llvm::Constant* getIntegerConstant(int value) {
+          return llvm::ConstantInt::get(getLLVMType(Type::getInt()), value);
+        }
+
+        llvm::Constant* getFloatConstant(double value) {
+          return llvm::ConstantFP::get(getLLVMType(Type::getDouble()), value);
         }
 
         void visit(ASTVarDecl* ast) override {
@@ -246,6 +257,8 @@ namespace tiny {
         }
 
         void visit(ASTFor* ast) override {
+          // ensure declared variables are in a new scope
+          enterBlock("for_loop");
           // prepare BB for condition, increment, body, and exit and save break, continue targets
           auto cond = llvm::BasicBlock::Create(*_context, "loop_condition", _func);
           auto loop_body = llvm::BasicBlock::Create(*_context, "loop_body", _func);
@@ -281,6 +294,8 @@ namespace tiny {
           // restore break and continue targets
           _break_target = old_break;
           _continue_target = old_continue;
+          // close loop scope
+          leaveBlock();
         }
 
         void visit(ASTBreak* ast) override {
@@ -459,7 +474,8 @@ namespace tiny {
               }
             } else {
               constant = llvm::ConstantInt::get(getLLVMType(Type::getInt()), ast->op == Symbol::Inc ? 1 : -1);
-              _last_result = llvm::GetElementPtrInst::Create(getLLVMType(dynamic_cast<PointerType*>(ast->arg->type())->base()), load_val, constant, "inc_ptr", _bb);
+              _last_result = llvm::GetElementPtrInst::Create(getLLVMType(dynamic_cast<PointerType*>(ast->arg->type())->base()),
+                                                             load_val, constant, "inc_ptr", _bb);
             }
 
             new llvm::StoreInst(_last_result, val, false, _bb);
@@ -718,8 +734,8 @@ namespace tiny {
 
         /** Enters new block.
          */
-        void enterBlock() {
-          llvm::BasicBlock *bb = llvm::BasicBlock::Create(*_context, "block", _func);
+        void enterBlock(const std::string & name = "block") {
+          llvm::BasicBlock *bb = llvm::BasicBlock::Create(*_context, name, _func);
           if (_bb->getTerminator() == nullptr) {
             llvm::BranchInst::Create(bb, _bb);
           }

@@ -74,16 +74,21 @@
 #define BP 2
 #define PC 3
 #define FLAGS 4
-#define R0 5
-#define R1 6
+#define R0 5 // return value
+#define R1 6 // temporary
 
 typedef size_t Register;
 class Operand {
 
 public:
-  Operand(Register r, int64_t offset): _register(r), _offset(offset), _isMemoryAccess(false) {}
-  Operand(Register r): _register(r), _offset(0), _isMemoryAccess(false) {
+  Operand(Register r, int64_t offset): _register1(r), _register2(NOREG), _offset(offset), _multiplier(1), _isMemoryAccess(false) {}
+  Operand(Register r): _register1(r), _register2(NOREG), _offset(0), _multiplier(1), _isMemoryAccess(false) {
     assert(r != FLAGS);
+  }
+
+  Operand(Register r1, Register r2,  int64_t offset): _register1(r1), _register2(r2), _offset(offset), _multiplier(1), _isMemoryAccess(false) {}
+  Operand(Register r1, Register r2): _register1(r1), _register2(r2), _offset(0), _multiplier(1), _isMemoryAccess(false) {
+    assert(r1 != FLAGS && r2 != FLAGS);
   }
 
   Operand & setMemoryAccess() {
@@ -95,39 +100,74 @@ public:
     _offset = offset;
     return *this;
   }
-
-  Operand & setRegister(Register reg) {
-    _register = reg;
+  Operand & increaseOffset(int64_t offset) {
+    _offset += offset;
     return *this;
+  }
+
+  Operand & setMultiplier(int64_t multiplier) {
+    _multiplier = multiplier;
+    return *this;
+  }
+
+  Operand & setRegister1(Register reg) {
+    _register1 = reg;
+    return *this;
+  }
+
+  Operand & setRegister2(Register reg) {
+    _register2 = reg;
+    return *this;
+  }
+
+  int64_t getOffset() {
+    return _offset;
+  }
+
+  static void printRegister(Register reg, std::ostream& os) {
+    switch (reg) {
+      case SP:
+        os << "SP";
+        break;
+      case FLAGS:
+        assert(0);
+        break;
+      case BP:
+        os << "BP";
+        break;
+      case PC:
+        os << "PC";
+        break;
+      case R0:
+        os << "R0";
+        break;
+      case R1:
+        os << "R1";
+        break;
+      default:
+        assert(reg > R1);
+        os << "R" << reg - R1 + 1;
+        break;
+    }
   }
 
   friend std::ostream& operator<<(std::ostream& os, const Operand & op) {
     if (op._isMemoryAccess) os << "[";
-    if (op._register != NOREG) {
-      switch (op._register) {
-        case SP:
-          os << "SP";
-          break;
-        case FLAGS:
-          assert(0);
-          break;
-        case BP:
-          os << "BP";
-          break;
-        case PC:
-          os << "PC";
-          break;
-        case R0:
-          os << "R0";
-          break;
-        case R1:
-          os << "R1";
-          break;
-        default:
-          assert(op._register > R1);
-          os << "R" << op._register - R1 + 1;
-          break;
+    if (op._register1 != NOREG) {
+      if (op._multiplier != 1) {
+        os << op._multiplier << "*";
       }
+      Operand::printRegister(op._register1, os);
+      // || (op._register2 != NOREG) is a silly workaround for broken t86
+      if (op._offset != 0 || (op._register2 != NOREG)) {
+        os << (op._offset >= 0 ? " + " : " - ") << abs(op._offset);
+      }
+      if (op._register2 != NOREG) {
+        os << " + ";
+        Operand::printRegister(op._register2, os);
+      }
+    } else if (op._register2 != NOREG) {
+      Operand::printRegister(op._register2, os);
       if (op._offset != 0) {
         os << (op._offset > 0 ? " + " : " - ") << abs(op._offset);
       }
@@ -135,13 +175,16 @@ public:
       assert(op._offset >= 0);
       os << op._offset;
     }
+
     if (op._isMemoryAccess) os << "]";
     return os;
   }
 
-private:
-  Register _register;
+public:
+  Register _register1;
+  Register _register2;
   int64_t _offset;
+  int64_t _multiplier;
   bool _isMemoryAccess;
 };
 

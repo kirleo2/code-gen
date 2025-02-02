@@ -36,6 +36,7 @@ class TargetTranslator {
   std::unordered_map<llvm::AllocaInst*, size_t> allocaOffsets;
   std::unordered_map<llvm::Function*, size_t> epilogueOffsets;
   std::vector<std::pair<size_t, llvm::BasicBlock*>> needToRelocate;
+  std::unordered_map<llvm::Value*, size_t> globalOffsets;
 
 public:
   TargetTranslator(Program & program) : program(program) {
@@ -46,6 +47,17 @@ public:
   // Firstly assign to each BB its address in assembly file then
   // Translate the provided LLVM IR to t86 instructions
   bool translateToTarget(const std::string &outputFile) {
+    size_t globalOffset = 0;
+    for (llvm::GlobalVariable &GV : program.module->globals()) {
+      if (GV.isDeclaration()) {
+        // External global variable, potentially add relocation
+        continue;
+      }
+
+      // Emit the global variable's data
+      translateGlobalVariable(GV, globalOffset);
+    }
+
     // emit call to the main
     needToRelocate.emplace_back(instructionCounter, &program.main->getEntryBlock());
     emitInstruction(CALL);
@@ -58,6 +70,7 @@ public:
       insertPrologue(stackSize);
       // Process each basic block within the function
       for (llvm::BasicBlock &BB : F) {
+        std::cout << instructionCounter << " " << BB.getName().str() << std::endl;
         bbToAddr[&BB] = instructionCounter;
         for (llvm::Instruction &I : BB) {
           translateInstruction(I); // Translate each instruction
@@ -77,6 +90,32 @@ public:
   }
 
 private:
+  std::vector<std::variant<std::string, int>> dataSection;
+  void emitStringToDataSection(const std::string &str) {
+    // Append the string's characters to the .data section buffer
+    dataSection.emplace_back(str);
+  }
+
+  void translateGlobalVariable(llvm::GlobalVariable &GV, size_t & offset) {
+    // Translate LLVM global variable into target representation
+    // Example: Emit to .data section
+    if (GV.isConstant() && GV.hasInitializer()) {
+      llvm::Constant *initializer = GV.getInitializer();
+
+      if (llvm::ConstantDataArray *strArray = llvm::dyn_cast<llvm::ConstantDataArray>(initializer)) {
+        if (strArray->isString()) {
+          // Extract the string value from the LLVM global
+          std::string str = strArray->getAsString().str();
+
+          // Emit the string to the .data section
+          emitStringToDataSection(str);
+          globalOffsets[&GV] = offset;
+          offset += str.size();
+          return;
+        }
+      }
+    }
+  }
   // We do not know exact address of each basic block during the jump generation,
   // but we can 'relocate' them after processing of all instructions,
   // when exact address of each basic block is known
@@ -156,22 +195,33 @@ private:
     llvm::Type* type = gepInst.getSourceElementType();
     size_t type_size = calculateTypeSize(type);
     size_t offset = 0;
-    for (auto & index : gepInst.indices()) {
-      assert(llvm::isa<llvm::ConstantInt>(index));
-      uint64_t constIdx = llvm::dyn_cast<llvm::ConstantInt>(index)->getZExtValue();
-      if (index == *gepInst.idx_begin()) {
-        offset += type_size * constIdx;
-      } else {
-        assert(type->isStructTy());
-        llvm::StructType * structType = llvm::dyn_cast<llvm::StructType>(type);
-        llvm::Type* elementType = structType->getElementType(constIdx);
-        for (size_t i = 0; i < constIdx; ++i) offset += calculateTypeSize(structType->getElementType(i));
-        type = elementType;
-      }
+    // we do not support greater number of indices on IR level
+    assert(gepInst.getNumIndices() <= 2);
+    // first index is array-index, so we need to calculate size of the type
+    auto idx = gepInst.idx_begin();
+    Operand op2 = getOperand(idx->get());
+    if (llvm::isa<llvm::Constant>(idx->get())) {
+      op2.setOffset(op2.getOffset() * (int64_t)type_size);
+    } else {
+      op2.setMultiplier((int64_t)type_size);
     }
-    assert(offset > 0);
+    emitInstruction(MOV, R1, op2);
+    // second index must be index of an element inside struct,
+    // so we need to manually calculate size of all previous element types
+    if (gepInst.getNumIndices() > 1) {
+      idx++;
+      assert(llvm::isa<llvm::Constant>(idx->get()));
+      uint64_t constIdx = llvm::dyn_cast<llvm::ConstantInt>(idx->get())->getZExtValue();
+      llvm::StructType * structType = llvm::dyn_cast<llvm::StructType>(type);
+      for (size_t i = 0; i < constIdx; ++i) offset += calculateTypeSize(structType->getElementType(i));
+    }
 
-    emitInstruction(LEA, getOperand(&gepInst), getOperand(ptr).setOffset((int64_t)offset).setMemoryAccess());
+    op2 =  getOperand(ptr).setRegister2(R1).increaseOffset((int64_t)offset);
+    if ((op2._register1 == NOREG || op2._register2 == NOREG) && op2._offset == 0) {
+      emitInstruction(MOV, getOperand(&gepInst), op2);
+    } else {
+      emitInstruction(LEA, getOperand(&gepInst), op2.setMemoryAccess());
+    }
   }
 
   void translateCmpInst(llvm::CmpInst & cmpInst) {
@@ -314,7 +364,7 @@ private:
 
   void translateLoadInst(llvm::LoadInst &load) {
     llvm::Value *ptr = load.getPointerOperand();
-    emitInstruction(Instruction("MOV", Operand(getOperand(&load)), Operand(getOperand(ptr)).setMemoryAccess()));
+    emitInstruction(Instruction(MOV, Operand(getOperand(&load)), Operand(getOperand(ptr)).setMemoryAccess()));
   }
 
   void emitJump(const std::string & inst, llvm::BasicBlock* bb) {
@@ -427,23 +477,32 @@ private:
    if (llvm::ConstantInt *constInt = llvm::dyn_cast<llvm::ConstantInt>(v)) {
       // e.g. ADD R2, 3 and we want to get register for immediate 3
       return Operand(NOREG, constInt->getSExtValue());
-    }
+   } else if (llvm::GlobalVariable* global = llvm::dyn_cast<llvm::GlobalVariable>(v)) {
+     assert(globalOffsets.count(global));
+     return Operand(NOREG, (int64_t) globalOffsets[global]);
+   }
 
-    if (registers.count(v) == 0) {
-      registers[v] = registers.size() + R1 + 1;
-    }
+   if (registers.count(v) == 0) {
+     registers[v] = registers.size() + R1 + 1;
+   }
 
-    return Operand(registers[v]);  // Simple register mapping
+   return Operand(registers[v]);  // Simple register mapping
   }
 
   // Emit the translated code to the specified output file
   bool emitMachineCode(const std::string &outputFile) {
-    std::ofstream file(outputFile);
+    std::ofstream file(outputFile, std::ios::out);
     if (!file.is_open()) {
       llvm::errs() << "Error opening file " << outputFile  << "\n";
       return false;
     }
-
+    file << ".data\n";
+    for (auto & el : dataSection) {
+      if (std::string* str = std::get_if<std::string>(&el)) {
+        file <<  "\"" << str->c_str() <<  "\"";
+      }
+    }
+    file << std::endl;
     file << ".text\n";
     for (size_t i = 0; i < translatedCode.size(); i++) {
       file << i << "\t" << translatedCode[i] << "\n";
