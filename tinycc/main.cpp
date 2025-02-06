@@ -115,50 +115,16 @@ Test tests[] = {
 //        TEST("int foo (int a, int b) {return a + b; } int main() {return foo( 1, 2 );}"),
 //        TEST("int main(int a, int b, int c) { b = ++a; c = a++;}", 0),
 //        TEST("int main() { int b[10]; }", 0),
-        TEST("void increment(int * x) {"
-             "*x = *x + 1;}"
-             "int main() { int x = 0; while(x < 100) {increment(&x); printi(-x);} "
-             "return 0; }", 0),
+//        TEST("void increment(int * x) {"
+//             "*x = *x + 1;}"
+//             "int main() { int x = 0; while(x < 100) {increment(&x); printi(-x);} "
+//             "return 0; }", 0),
 //        TEST("int main() { char * str = \"test\"; char* str2 = \"second str\"; for (int i = 0; i < 4; i++) {printc(str[i]);}\n"
 //             "for (int i = 0; i < 10; i++) {printc(str2[i]);} return 0;}", 0),
-//        TEST("int mod_exp(int base, int exponent, int mod) {\n"
-//             "int result = 1;\n"
-//             "  base = base % mod;  // Handle base greater than mod\n"
-//             "  while (exponent > 0) {\n"
-//             "    if (exponent % 2 == 1) {\n"
-//             "      result = result * base;\n"
-//             "      result = result % mod;\n"
-//             "    }\n"
-//             "    base = base * base;\n"
-//             "    base = base % mod;"
-//             "    exponent =  exponent / 2;\n"
-//             "  }\n"
-//             "  return result;\n"
-//             "}\n"
-//             "\n"
-//             "int order_of_element(int a, int x) {\n"
-//             "  for (int n = 1; n < x; n++) {\n"
-//             "    if (mod_exp(a, n, x) == 1) {\n"
-//             "      return n;  // Return the smallest n such that a^n ≡ 1 (mod x)\n"
-//             "    }\n"
-//             "  }\n"
-//             "  return -1;  // If no such n exists\n"
-//             "}\n"
-//             "\n"
-//             "int main() {\n"
-//             "char a_ = scan();\n"
-//             "char x_ = scan();\n"
-//             "int a = a_; int x = x_;"
-//             "//  printf(\"Enter the element a: \");\n"
-//             "//  scanf(\"%d\", &a);\n"
-//             "//  printf(\"Enter the modulus x: \");\n"
-//             "//  scanf(\"%d\", &x);\n"
-//             "\n"
-//             "  int order = order_of_element(a, x);\n"
-//             "printi(order);"
-//             "\n"
-//             "\n"
-//             "  return 0;\n"
+//        TEST("int main() {\n"
+//             "  int x[10];"
+//             "x[1] = 2; printi(x[1]);"
+//             "return 0;"
 //             "}", 0),
 //    TEST("\n"
 //         "struct Point {\n"
@@ -180,7 +146,47 @@ Test tests[] = {
 //         "  printi(rect.b.b);\n"
 //         "  return 0;\n"
 //         "}", 0),
-//    TEST("int main() { if (1) return 10; else return 2; }", 10),
+    TEST(
+         "\n"
+         "// Binary Search function\n"
+         "int binarySearch(int* arr, int size, int target) {\n"
+         "    int low = 0;\n"
+         "    int high = size - 1;\n"
+         "    \n"
+         "    while (low <= high) {\n"
+         "    int mid = high - low; mid = mid / 2; mid = mid + low;\n"
+         "        \n"
+         "        // Check if target is present at mid\n"
+         "        if (arr[mid] == target) {\n"
+         "            return mid; // Target found, return its index\n"
+         "        }\n"
+         "        \n"
+         "        if (arr[mid] < target) {\n"
+         "            low = mid + 1;\n"
+         "        }\n"
+         "       \n"
+         "        else {\n"
+         "            high = mid - 1;\n"
+         "        }\n"
+         "    }\n"
+         "    \n"
+         "    return -1; \n"
+         "}\n"
+         "\n"
+         "int main() {\n"
+         "    int arr[10];"
+         "int size = 10;\n"
+         "    for (int i = 0; i < size; i++) {\n"
+         "        arr[i] = 2 * i + 1;\n"
+         "    }\n"
+         "    int target = 4;\n"
+         "\n"
+         "    int result = binarySearch(arr, size, target);\n"
+         "printi(result);"
+         "    \n"
+         "\n"
+         "    return 0;\n"
+         "}", 10),
 //    TEST("int main() { if (0) return 10; else return 2; }", 2),
 //    TEST("int main() { int i = 1; return i; }", 1),
 //    TEST("int bar(int i) { return i; } int main() { return bar(5); }", 5),
@@ -330,32 +336,17 @@ bool compile(std::string const & contents, Test const * test) {
         std::unique_ptr<AST> ast = (test == nullptr) ? Parser::parseFile(contents) : Parser::parse(contents);
         if (Options::verboseAST)
             std::cout << ColorPrinter::colorize(*ast) << std::endl;
-        // TODO
         // typecheck
         Typechecker::checkProgram(ast);
         // translate to IR
         Program p = ASTToILTranslator::translateProgram(ast);
         assert(p.main != nullptr);
-//        if (Options::verboseIL)
-//            std::cout << ColorPrinter::colorize(p) << std::endl;
-//        if (test && test->testResult && Options::testIR) {
-//            int64_t result = ILInterpreter::run(p);
-//            if (result != test->result) {
-//                std::cerr << "ERROR: expected " << test->result << ", got " << result << color::reset << std::endl;
-//                return false;
-//            }
-//        }
         // optimize
         // TODO
+
         // translate to target
-
-      // Assume some LLVM IR has already been loaded into `module`...
-
-      // Create and use the TargetTranslator for custom translation
         TargetTranslator translator(p);
         translator.translateToTarget("/Users/kirleo/Documents/gen/code-gen/tinycc/output.t86");
-        // TODO
-        // run on t86, or output and verify?
         return (test == nullptr) || ! (test->shouldError);
     } catch (SourceError const & e) {
         if ((test != nullptr) && test->shouldError == e.kind())

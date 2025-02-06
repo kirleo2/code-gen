@@ -143,7 +143,12 @@ private:
     for (llvm::BasicBlock &BB : function) {
       for (llvm::Instruction &I : BB) {
         if (llvm::AllocaInst *alloca = llvm::dyn_cast<llvm::AllocaInst>(&I)) {
-          size += calculateTypeSize(alloca->getAllocatedType());
+          if (alloca->isArrayAllocation()) {
+            size_t numElements = llvm::dyn_cast<llvm::ConstantInt>(alloca->getArraySize())->getZExtValue();
+            size += calculateTypeSize(alloca->getAllocatedType()) * numElements;
+          } else {
+            size += calculateTypeSize(alloca->getAllocatedType());
+          }
           allocaOffsets[alloca] = size;
         }
       }
@@ -183,10 +188,20 @@ private:
       translateCmpInst(*cmpInst);
     } else if (llvm::GetElementPtrInst * gepInst = llvm::dyn_cast<llvm::GetElementPtrInst>(&I)) {
       translateGepInst(*gepInst);
+    } else if (llvm::SExtInst* sext = llvm::dyn_cast<llvm::SExtInst>(&I)) {
+      // do not translate signed extensions
+      return;
+    } else if (llvm::PHINode* phi = llvm::dyn_cast<llvm::PHINode>(&I)) {
+      llvm::errs() << "Unsupported instruction: " << I << "\n";
+      UNREACHABLE;
     } else {
         llvm::errs() << "Unsupported instruction: " << I << "\n";
         UNREACHABLE;
     }
+  }
+
+  void translatePhiNode(llvm::PHINode & phiNode) {
+    UNREACHABLE;
   }
 
   void translateGepInst(llvm::GetElementPtrInst & gepInst) {
@@ -381,50 +396,53 @@ private:
     std::string inst;
     llvm::BasicBlock* bb = nullptr;
     if (branch.isConditional()) {
-      llvm::CmpInst* cmp = llvm::dyn_cast<llvm::CmpInst>(branch.getCondition());
       llvm::BasicBlock* bb_true = branch.getSuccessor(0);
       // false case
       bb = branch.getSuccessor(1);
-      switch (cmp->getPredicate()) {
-        case llvm::CmpInst::FCMP_OEQ:
-          inst = JE;
-          break;
-        case llvm::CmpInst::FCMP_OGT:
-          inst = JG;
-          break;
-        case llvm::CmpInst::FCMP_OGE:
-          inst = JGE;
-          break;
-        case llvm::CmpInst::FCMP_OLT:
-          inst = JL;
-          break;
-        case llvm::CmpInst::FCMP_OLE:
-          inst = JLE;
-          break;
-        case llvm::CmpInst::FCMP_ONE:
-          inst = JNE;
-          break;
-        case llvm::CmpInst::ICMP_EQ:
-          inst = JE;
-          break;
-        case llvm::CmpInst::ICMP_NE:
-          inst = JNE;
-          break;
-        case llvm::CmpInst::ICMP_SGT:
-          inst = JG;
-          break;
-        case llvm::CmpInst::ICMP_SGE:
-          inst = JGE;
-          break;
-        case llvm::CmpInst::ICMP_SLT:
-          inst = JL;
-          break;
-        case llvm::CmpInst::ICMP_SLE:
-          inst = JLE;
-          break;
-        default:
-          UNREACHABLE;
-          break;
+      if (llvm::CmpInst* cmp = llvm::dyn_cast<llvm::CmpInst>(branch.getCondition())) {
+        switch (cmp->getPredicate()) {
+          case llvm::CmpInst::FCMP_OEQ:
+            inst = JE;
+            break;
+          case llvm::CmpInst::FCMP_OGT:
+            inst = JG;
+            break;
+          case llvm::CmpInst::FCMP_OGE:
+            inst = JGE;
+            break;
+          case llvm::CmpInst::FCMP_OLT:
+            inst = JL;
+            break;
+          case llvm::CmpInst::FCMP_OLE:
+            inst = JLE;
+            break;
+          case llvm::CmpInst::FCMP_ONE:
+            inst = JNE;
+            break;
+          case llvm::CmpInst::ICMP_EQ:
+            inst = JE;
+            break;
+          case llvm::CmpInst::ICMP_NE:
+            inst = JNE;
+            break;
+          case llvm::CmpInst::ICMP_SGT:
+            inst = JG;
+            break;
+          case llvm::CmpInst::ICMP_SGE:
+            inst = JGE;
+            break;
+          case llvm::CmpInst::ICMP_SLT:
+            inst = JL;
+            break;
+          case llvm::CmpInst::ICMP_SLE:
+            inst = JLE;
+            break;
+          default:
+            UNREACHABLE;
+            break;
+        }
+      } else {
+        inst = JNZ;
       }
       emitJump(inst, bb_true);
     } else {

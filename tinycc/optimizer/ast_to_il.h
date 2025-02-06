@@ -253,7 +253,6 @@ namespace tiny {
         void visit(ASTDoWhile* ast) override { 
             MARK_AS_UNUSED(ast);
             NOT_IMPLEMENTED;
-
         }
 
         void visit(ASTFor* ast) override {
@@ -321,14 +320,18 @@ namespace tiny {
           llvm::Value* lhs = createCast(translate(ast->left), getLLVMType(ast->type()));
           llvm::Value* rhs = nullptr;
           // Operators && and || need special treatment,
-          // because we do not want to evaluate both of conditionds
+          // because we do not want to evaluate both of conditions
           // always and we want to use PHI node to choose control flow
           if (ast->op == Symbol::And || ast->op == Symbol::Or) {
             // Create BB for rhs condition and evaluate it inside, because we want to jump there based
             // on the lhs condition
+            auto old_bb = _bb;
+
             llvm::BasicBlock* cond_rhs = llvm::BasicBlock::Create(*_context,"cond_rhs", _func);
             _bb = cond_rhs;
             rhs = createCast(translate(ast->right), getLLVMType(ast->type()));
+
+            _bb = old_bb;
 
             // Intermediate represents evaluation result of lhs. False in case of && and true in case of ||.
             llvm::BasicBlock* intermediate = llvm::BasicBlock::Create(*_context, "intermediate", _func);
@@ -343,6 +346,7 @@ namespace tiny {
 
             result->addIncoming(lhs, intermediate);
             result->addIncoming(rhs, cond_rhs);
+            _last_result = result;
 
             if (ast->op == Symbol::And) {
               // Do not evaluate cond_rhs if lhs is false
